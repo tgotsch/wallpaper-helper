@@ -1,0 +1,17 @@
+[package]
+name = "WallpaperHelper_rs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+winapi = { version = "0.3", features = [
+    "winuser", "windef", "errhandlingapi", "combaseapi",
+    "objbase", "wtypes", "oleauto", "winerror", "guiddef",
+    "wingdi", "winreg", "winnt", "minwindef", "unknwnbase", "shobjidl_core"
+] }
+windows = { version = "0.61.3", features = ["Win32_System_Com", "Win32_UI", "Win32_UI_Shell", "Win32_Graphics", "Win32_Graphics_Gdi"] }
+gtk4 = "0.10.0"
+chrono = "0.4.41"
