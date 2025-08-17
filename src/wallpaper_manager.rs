@@ -314,8 +314,7 @@ impl WallpaperManager {
                             // Check if this monitor matches our device name
                             let is_match = monitor_id_str == device_name
                                 || monitor_id_str.contains(device_name)
-                                || device_name.contains(&monitor_id_str)
-                                || i == 0; // fallback to first monitor
+                                || device_name.contains(&monitor_id_str);
 
                             if is_match {
                                 println!("Trying to set wallpaper for monitor: {}", monitor_id_str);

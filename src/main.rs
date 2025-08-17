@@ -1,14 +1,23 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::Write;
 use std::ops::Index;
 use std::rc::Rc;
 use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::{glib, ApplicationWindow, Application, Button, Box, Image};
+use gtk4::DropDown;
 use gtk4::glib::property::PropertyGet;
 use crate::wallpaper_manager::WallpaperManager;
 
 mod wallpaper_manager;
+
+#[derive(Clone)]
+struct WallpaperData {
+    monitor_name: String,
+    filename:  String,
+    image: Image,
+}
 
 fn build_ui(app: &gtk::Application) {
     let mut manager = Rc::new(RefCell::new(WallpaperManager::new()));
@@ -25,17 +34,25 @@ fn build_ui(app: &gtk::Application) {
     let grid = gtk::Grid::new();
     grid.set_column_spacing(5);
 
-    let mut wallpapers: Vec<Image> = Vec::new();
+    let mut wallpapers: Vec<WallpaperData> = Vec::new();
 
     for (i, monitor) in manager.borrow().monitors.iter().enumerate()
     {
+        let wallpaper_str = manager.borrow().get_current_wallpaper_by_monitor_id(monitor.device_name.as_str());
+
         let current_wallpaper = Image::builder()
             .file(manager.borrow().get_current_wallpaper_by_monitor_id(monitor.device_name.as_str()))
             .hexpand(true)
             .vexpand(true)
             .build();
 
-        wallpapers.push(current_wallpaper.clone());
+        let wallpaper_data = WallpaperData {
+            monitor_name: monitor.device_name.clone(),
+            filename: wallpaper_str,
+            image: current_wallpaper.clone()
+        };
+
+        wallpapers.push(wallpaper_data);
 
         let button = Button::with_label(&*monitor.device_name);
         button.connect_clicked(move |_| {
@@ -57,20 +74,7 @@ fn build_ui(app: &gtk::Application) {
         let wallpapers_cloned = wallpapers.clone();
         let manager_clone = manager.clone();
         move |_| {
-            if let Some(selected_item) = dropdown.selected_item()
-            {
-                if let Ok(string_object) = selected_item.downcast::<gtk::StringObject>()
-                {
-                    let selected_text = string_object.string();
-                    if let Some(selected_profile) = manager_clone.borrow().profiles.get(selected_text.as_str())
-                    {
-                        for (i, pair) in selected_profile.monitor_wallpapers.iter().enumerate()
-                        {
-                            wallpapers_cloned[i].set_from_file(Some(pair.1));
-                        }
-                    }
-                }
-            }
+            update_wallpaper_images_from_profile(&dropdown, &wallpapers_cloned, &manager_clone);
         }
     });
 
@@ -143,6 +147,25 @@ fn build_ui(app: &gtk::Application) {
     window.present();
 }
 
+fn update_wallpaper_images_from_profile(dropdown: &DropDown,
+                                        wallpapers: &Vec<WallpaperData>,
+                                        manager: &Rc<RefCell<WallpaperManager>>) {
+    if let Some(selected_item) = dropdown.selected_item() {
+        if let Ok(string_object) = selected_item.downcast::<gtk::StringObject>() {
+            let selected_text = string_object.string();
+            if let Some(selected_profile) = manager.borrow().profiles.get(selected_text.as_str()) {
+                for (i, pair) in selected_profile.monitor_wallpapers.iter().enumerate() {
+                    let found_res = wallpapers.iter().find(|w| w.monitor_name == *pair.0);
+
+                    if let Some(found) = found_res {
+                        found.image.set_from_file(Some(pair.1));
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Example usage and CLI interface
 fn main() {
     let app = Application::builder()
@@ -153,7 +176,10 @@ fn main() {
 
     app.run(); //blocks
 
-    /*println!("Rust Wallpaper Manager");
+    /*let mut manager : WallpaperManager = WallpaperManager::new();
+    manager.load_config("config.txt");
+
+    println!("Rust Wallpaper Manager");
     println!("======================");
 
     loop {
