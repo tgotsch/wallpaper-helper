@@ -1,13 +1,9 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::io::Write;
-use std::ops::Index;
 use std::rc::Rc;
 use gtk4 as gtk;
 use gtk::prelude::*;
-use gtk::{glib, ApplicationWindow, Application, Button, Box, Image};
+use gtk::{ApplicationWindow, Application, Button, Box, Image, FileChooserDialog};
 use gtk4::DropDown;
-use gtk4::glib::property::PropertyGet;
 use crate::wallpaper_manager::WallpaperManager;
 
 mod wallpaper_manager;
@@ -17,42 +13,128 @@ struct WallpaperData {
     monitor_name: String,
     filename:  String,
     image: Image,
+    button: Button,
+}
+
+impl WallpaperData {
+    fn new(monitor_name: String, initial_filename: String) -> Self {
+        let image = Image::new();
+        let button = Button::new();
+
+        // Set initial image if file exists
+        if !initial_filename.is_empty() {
+            image.set_from_file(Some(&initial_filename));
+        }
+
+        image.set_hexpand(true);
+        image.set_vexpand(true);
+
+        // Add the image to the button
+        button.set_child(Some(&image));
+
+        // Make the button look like just an image (remove default styling)
+        button.add_css_class("flat");
+        button.set_has_frame(false);
+        button.set_hexpand(true);
+        button.set_vexpand(true);
+
+        Self {
+            monitor_name,
+            filename: initial_filename,
+            image,
+            button,
+        }
+    }
+
+    fn setup_click_handler(&self, wallpapers: Rc<RefCell<Vec<WallpaperData>>>) {
+        let monitor_name = self.monitor_name.clone();
+        let image = self.image.clone();
+        let wallpapers_clone = wallpapers.clone();
+
+        self.button.connect_clicked(move |button| {
+            let window = button.root()
+                .and_then(|root| root.downcast::<gtk::Window>().ok());
+
+            let dialog = FileChooserDialog::new(
+                Some("Select Wallpaper"),
+                window.as_ref(),
+                gtk::FileChooserAction::Open,
+                &[
+                    ("_Cancel", gtk::ResponseType::Cancel),
+                    ("_Open", gtk::ResponseType::Accept),
+                ],
+            );
+
+            // Set up file filters for images
+            let filter = gtk::FileFilter::new();
+            filter.set_name(Some("Image files"));
+            filter.add_mime_type("image/*");
+            filter.add_pattern("*.jpg");
+            filter.add_pattern("*.jpeg");
+            filter.add_pattern("*.png");
+            filter.add_pattern("*.gif");
+            filter.add_pattern("*.bmp");
+            filter.add_pattern("*.webp");
+
+            dialog.set_filter(&filter);
+
+            let monitor_name_clone = monitor_name.clone();
+            let image_clone = image.clone();
+            let wallpapers_clone2 = wallpapers_clone.clone();
+
+            dialog.connect_response(move |dialog, response| {
+                if response == gtk::ResponseType::Accept {
+                    if let Some(file) = dialog.file() {
+                        if let Some(path) = file.path() {
+                            let path_str = path.to_string_lossy().to_string();
+
+                            // Update the image
+                            image_clone.set_from_file(Some(&path_str));
+
+                            // Update the data structure
+                            if let Ok(mut wallpapers_borrowed) = wallpapers_clone2.try_borrow_mut() {
+                                if let Some(wallpaper_data) = wallpapers_borrowed
+                                    .iter_mut()
+                                    .find(|w| w.monitor_name == monitor_name_clone)
+                                {
+                                    wallpaper_data.filename = path_str;
+                                }
+                            }
+                        }
+                    }
+                }
+                dialog.close();
+            });
+
+            dialog.show();
+        });
+    }
 }
 
 fn build_ui(app: &gtk::Application) {
-    let mut manager = Rc::new(RefCell::new(WallpaperManager::new()));
+    let manager = Rc::new(RefCell::new(WallpaperManager::new()));
+    let wallpapers: Rc<RefCell<Vec<WallpaperData>>> = Rc::new(RefCell::new(Vec::new()));
     manager.borrow_mut().load_config("config.txt");
 
     let window = ApplicationWindow::builder()
         .application(app)
-        .default_width(350)
-        .default_height(200)
-        .title("Wallpaper")
+        .default_width(1000)
+        .default_height(1000)
+        .title("Wallpaper Helper")
         .build();
 
     let v_box = Box::new(gtk::Orientation::Vertical, 10);
     let grid = gtk::Grid::new();
     grid.set_column_spacing(5);
 
-    let mut wallpapers: Vec<WallpaperData> = Vec::new();
-
     for (i, monitor) in manager.borrow().monitors.iter().enumerate()
     {
         let wallpaper_str = manager.borrow().get_current_wallpaper_by_monitor_id(monitor.device_name.as_str());
 
-        let current_wallpaper = Image::builder()
-            .file(manager.borrow().get_current_wallpaper_by_monitor_id(monitor.device_name.as_str()))
-            .hexpand(true)
-            .vexpand(true)
-            .build();
+        let wallpaper_data = WallpaperData::new(monitor.device_name.clone(), wallpaper_str.to_string());
+        wallpaper_data.setup_click_handler(wallpapers.clone());
 
-        let wallpaper_data = WallpaperData {
-            monitor_name: monitor.device_name.clone(),
-            filename: wallpaper_str,
-            image: current_wallpaper.clone()
-        };
-
-        wallpapers.push(wallpaper_data);
+        wallpapers.borrow_mut().push(wallpaper_data.clone());
 
         let button = Button::with_label(&*monitor.device_name);
         button.connect_clicked(move |_| {
@@ -62,7 +144,7 @@ fn build_ui(app: &gtk::Application) {
         let label = gtk::Label::new(Some(&monitor.device_name));
 
         grid.attach(&label, i as i32, 0, 1, 1);
-        grid.attach(&current_wallpaper, i as i32, 1, 1, 1);
+        grid.attach(&wallpaper_data.button, i as i32, 1, 1, 1);
     }
 
     let foo : Vec<String> = manager.borrow().profiles.keys().cloned().collect();
@@ -74,9 +156,11 @@ fn build_ui(app: &gtk::Application) {
         let wallpapers_cloned = wallpapers.clone();
         let manager_clone = manager.clone();
         move |_| {
-            update_wallpaper_images_from_profile(&dropdown, &wallpapers_cloned, &manager_clone);
+            update_wallpaper_images_from_profile(&dropdown, &wallpapers_cloned.borrow(), &manager_clone);
         }
     });
+
+    update_wallpaper_images_from_profile(&profile_selector, &wallpapers.borrow(), &manager);
 
     let apply_button = Button::with_label("Apply Selected profile");
     apply_button.connect_clicked({
@@ -97,7 +181,6 @@ fn build_ui(app: &gtk::Application) {
 
     let new_button = Button::with_label("New profile");
     let parent_clone = window.clone();
-    let mut manager_clone = manager.clone();
     new_button.connect_clicked(move |_| {
         // Create the dialog, with OK and Cancel buttons
         let dialog = gtk::Dialog::builder()
@@ -121,6 +204,7 @@ fn build_ui(app: &gtk::Application) {
         dialog.show();
 
         let m_clone = manager.clone();
+        let wallpapers_cloned = wallpapers.clone();
         // Handle responses
         dialog.connect_response(move |d, resp| {
             if resp == gtk::ResponseType::Ok {
@@ -128,6 +212,12 @@ fn build_ui(app: &gtk::Application) {
                 if !name.trim().is_empty() {
                     println!("Creating profile: {}", name);
                     m_clone.borrow_mut().create_profile(name.as_str());
+
+                    for wallpaper in wallpapers_cloned.borrow().iter()
+                    {
+                        m_clone.borrow_mut().set_wallpaper_in_profile(name.as_str(), wallpaper.monitor_name.as_str(), wallpaper.filename.as_str());
+                    }
+                    m_clone.borrow_mut().save_config("config.txt");
                 }
             }
             d.close();
