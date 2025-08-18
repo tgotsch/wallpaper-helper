@@ -67,6 +67,7 @@ impl std::fmt::Debug for MonitorInfo {
 pub struct WallpaperProfile {
     pub name: String,
     pub monitor_wallpapers: HashMap<String, String>, // deviceName -> wallpaperPath
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -474,6 +475,7 @@ impl WallpaperManager {
         self.profiles.insert(profile_name.to_string(), WallpaperProfile {
             name: profile_name.to_string(),
             monitor_wallpapers: HashMap::new(),
+            tags: Vec::new(),
         });
 
         println!("Profile '{}' created.", profile_name);
@@ -642,6 +644,19 @@ impl WallpaperManager {
         println!("Scheduler stopped.");
     }
 
+    pub fn add_tag(&mut self, tag_name: &str, profile_name: &str)
+    {
+        if let Some(found) =self.profiles.get_mut(profile_name)
+        {
+            found.tags.push(tag_name.to_string());
+        }
+    }
+
+    pub fn get_tags(&self, profile_name: &str) -> Vec<String>
+    {
+        self.profiles.values().filter(|profile| profile.name == profile_name).map(|profile| profile.tags.clone()).flatten().collect()
+    }
+
     pub fn save_config(&self, filename: &str) -> bool {
         match std::fs::File::create(filename) {
             Ok(mut file) => {
@@ -661,6 +676,11 @@ impl WallpaperManager {
                             println!("Failed to write wallpaper mapping to config file");
                             return false;
                         }
+                    }
+                    if writeln!(file, "tags={}", &profile.tags.join(",")).is_err()
+                    {
+                        println!("Failed to write tags to config file");
+                        return false;
                     }
                 }
 
@@ -730,8 +750,20 @@ impl WallpaperManager {
                         self.profiles.insert(current_profile.clone(), WallpaperProfile {
                             name: current_profile.clone(),
                             monitor_wallpapers: HashMap::new(),
+                            tags: Vec::new()
                         });
-                    } else if line.starts_with("  ") && !current_profile.is_empty() {
+                    } else if line.starts_with("  tags") {
+                        if let Some(eq_pos) = line.find('=') {
+                            let tags_string = line[eq_pos + 1..].to_string();
+                            for tag in tags_string.split(",") {
+                                if let Some(profile) = self.profiles.get_mut(&current_profile)
+                                {
+                                    profile.tags.push(tag.to_string());
+                                }
+                            }
+                        }
+                    }
+                    else if line.starts_with("  ") && !current_profile.is_empty() {
                         if let Some(eq_pos) = line.find('=') {
                             let device = line[2..eq_pos].to_string();
                             let wallpaper = line[eq_pos + 1..].to_string();
