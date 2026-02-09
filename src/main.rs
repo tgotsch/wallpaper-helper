@@ -115,7 +115,7 @@ impl WallpaperData {
 fn build_ui(app: &gtk::Application) {
     let manager = Rc::new(RefCell::new(WallpaperManager::new()));
     let wallpapers: Rc<RefCell<Vec<WallpaperData>>> = Rc::new(RefCell::new(Vec::new()));
-    manager.borrow_mut().load_config("config.txt");
+    manager.borrow_mut().load_config("config.json");
 
     let window = ApplicationWindow::builder()
         .application(app)
@@ -218,7 +218,7 @@ fn build_ui(app: &gtk::Application) {
                     {
                         m_clone.borrow_mut().set_wallpaper_in_profile(name.as_str(), wallpaper.monitor_name.as_str(), wallpaper.filename.as_str());
                     }
-                    m_clone.borrow_mut().save_config("config.txt");
+                    m_clone.borrow_mut().save_config("config.json");
                 }
             }
             d.close();
@@ -268,7 +268,7 @@ fn main() {
     app.run(); //blocks
 
     /*let mut manager : WallpaperManager = WallpaperManager::new();
-    manager.load_config("config.txt");
+    manager.load_config("config.json");
 
     println!("Rust Wallpaper Manager");
     println!("======================");

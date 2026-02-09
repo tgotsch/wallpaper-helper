@@ -1,8 +1,6 @@
 use std::collections::HashMap;
-use std::ffi::{CString, OsStr};
-use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
-use std::ops::Index;
+use std::ffi::OsStr;
+use std::fs;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,6 +8,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use chrono::{Local, Timelike};
+use serde::{Serialize, Deserialize};
 use winapi::um::winuser::MONITORINFOF_PRIMARY;
 use windows::core::{BOOL, GUID, HRESULT, HSTRING, Result, PWSTR};
 
@@ -63,19 +62,26 @@ impl std::fmt::Debug for MonitorInfo {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WallpaperProfile {
+    #[serde(skip)]
     pub name: String,
     pub monitor_wallpapers: HashMap<String, String>, // deviceName -> wallpaperPath
     pub tags: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduleEntry {
     pub profile_name: String,
     pub hour: u32,
     pub minute: u32,
     pub enabled: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Config {
+    profiles: HashMap<String, WallpaperProfile>,
+    schedule: Vec<ScheduleEntry>,
 }
 
 #[derive(Clone)]
@@ -658,143 +664,57 @@ impl WallpaperManager {
     }
 
     pub fn save_config(&self, filename: &str) -> bool {
-        match std::fs::File::create(filename) {
-            Ok(mut file) => {
-                // Save profiles
-                if writeln!(file, "[PROFILES]").is_err() {
-                    println!("Failed to write to config file");
-                    return false;
-                }
+        let config = Config {
+            profiles: self.profiles.clone(),
+            schedule: self.schedule.clone(),
+        };
 
-                for (name, profile) in &self.profiles {
-                    if writeln!(file, "PROFILE:{}", name).is_err() {
-                        println!("Failed to write profile to config file");
-                        return false;
+        match serde_json::to_string_pretty(&config) {
+            Ok(json) => {
+                match fs::write(filename, json) {
+                    Ok(_) => {
+                        println!("Configuration saved to {}", filename);
+                        true
                     }
-                    for (device, wallpaper) in &profile.monitor_wallpapers {
-                        if writeln!(file, "  {}={}", device, wallpaper).is_err() {
-                            println!("Failed to write wallpaper mapping to config file");
-                            return false;
-                        }
-                    }
-                    if writeln!(file, "tags={}", &profile.tags.join(",")).is_err()
-                    {
-                        println!("Failed to write tags to config file");
-                        return false;
+                    Err(e) => {
+                        println!("Failed to save config to {}: {}", filename, e);
+                        false
                     }
                 }
-
-                // Save schedule
-                if writeln!(file, "[SCHEDULE]").is_err() {
-                    println!("Failed to write schedule section to config file");
-                    return false;
-                }
-
-                for entry in &self.schedule {
-                    if writeln!(file, "{},{},{},{}",
-                                entry.profile_name,
-                                entry.hour,
-                                entry.minute,
-                                if entry.enabled { 1 } else { 0 }
-                    ).is_err() {
-                        println!("Failed to write schedule entry to config file");
-                        return false;
-                    }
-                }
-
-                println!("Configuration saved to {}", filename);
-                true
             }
             Err(e) => {
-                println!("Failed to save config to {}: {}", filename, e);
+                println!("Failed to serialize config: {}", e);
                 false
             }
         }
     }
 
     pub fn load_config(&mut self, filename: &str) -> bool {
-        let file = match File::open(filename) {
-            Ok(file) => file,
+        let contents = match fs::read_to_string(filename) {
+            Ok(contents) => contents,
             Err(_) => {
                 println!("Config file not found: {}", filename);
                 return false;
             }
         };
 
-        self.profiles.clear();
-        self.schedule.clear();
+        match serde_json::from_str::<Config>(&contents) {
+            Ok(config) => {
+                self.profiles = config.profiles;
+                self.schedule = config.schedule;
 
-        let reader = BufReader::new(file);
-        let mut current_section = String::new();
-        let mut current_profile = String::new();
-
-        for line in reader.lines() {
-            let line = match line {
-                Ok(line) => line.to_string(),
-                Err(_) => continue,
-            };
-
-            if line.is_empty() {
-                continue;
-            }
-
-            if line.starts_with('[') && line.ends_with(']') {
-                current_section = line[1..line.len()-1].to_string();
-                continue;
-            }
-
-            match current_section.as_str() {
-                "PROFILES" => {
-                    if line.starts_with("PROFILE:") {
-                        current_profile = line[8..].to_string();
-                        self.profiles.insert(current_profile.clone(), WallpaperProfile {
-                            name: current_profile.clone(),
-                            monitor_wallpapers: HashMap::new(),
-                            tags: Vec::new()
-                        });
-                    } else if line.starts_with("  tags") {
-                        if let Some(eq_pos) = line.find('=') {
-                            let tags_string = line[eq_pos + 1..].to_string();
-                            for tag in tags_string.split(",") {
-                                if let Some(profile) = self.profiles.get_mut(&current_profile)
-                                {
-                                    profile.tags.push(tag.to_string());
-                                }
-                            }
-                        }
-                    }
-                    else if line.starts_with("  ") && !current_profile.is_empty() {
-                        if let Some(eq_pos) = line.find('=') {
-                            let device = line[2..eq_pos].to_string();
-                            let wallpaper = line[eq_pos + 1..].to_string();
-                            if let Some(profile) = self.profiles.get_mut(&current_profile) {
-                                profile.monitor_wallpapers.insert(device, wallpaper);
-                            }
-                        }
-                    }
+                // Populate the skipped `name` field from the HashMap keys
+                for (name, profile) in &mut self.profiles {
+                    profile.name = name.clone();
                 }
-                "SCHEDULE" => {
-                    let parts: Vec<&str> = line.split(',').collect();
-                    if parts.len() == 4 {
-                        if let (Ok(hour), Ok(minute), Ok(enabled_int)) = (
-                            parts[1].parse::<u32>(),
-                            parts[2].parse::<u32>(),
-                            parts[3].parse::<i32>()
-                        ) {
-                            self.schedule.push(ScheduleEntry {
-                                profile_name: parts[0].to_string(),
-                                hour,
-                                minute,
-                                enabled: enabled_int == 1,
-                            });
-                        }
-                    }
-                }
-                _ => {}
+
+                println!("Configuration loaded from {}", filename);
+                true
+            }
+            Err(e) => {
+                println!("Failed to parse config from {}: {}", filename, e);
+                false
             }
         }
-
-        println!("Configuration loaded from {}", filename);
-        true
     }
 }

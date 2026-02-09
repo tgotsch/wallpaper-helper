@@ -26,7 +26,7 @@ This is a **Windows desktop wallpaper manager** with a GTK4 GUI. It lets users c
   - `profiles: HashMap<String, WallpaperProfile>` — named profiles mapping monitor device paths to wallpaper file paths
   - `schedule: Vec<ScheduleEntry>` — time-based profile switching (scheduler runs in a background thread)
   - Wallpaper setting uses the COM `IDesktopWallpaper` interface with a fallback strategy
-  - Config persistence via a custom text format (`config.txt`)
+  - Config persistence via JSON (`config.json`) using `serde`/`serde_json`
 
 - **`src/wallpaper_source.rs`** — WIP/incomplete trait-based abstraction for wallpaper sources (`LocalFileSource`, `UrlSource`, `FolderSource`, `BooruSource`). Currently commented out of `main.rs`.
 
@@ -36,6 +36,27 @@ This is a **Windows desktop wallpaper manager** with a GTK4 GUI. It lets users c
 - COM is initialized/uninitialized per-call in `WallpaperManager` methods — each method that touches `IDesktopWallpaper` does its own `CoInitialize`/`CoUninitialize`.
 - The GUI uses `Rc<RefCell<>>` for shared mutable state between GTK4 signal handlers.
 
-### Config file format (`config.txt`)
+### Config file format (`config.json`)
 
-Custom INI-like format with `[PROFILES]` and `[SCHEDULE]` sections. Profiles start with `PROFILE:<name>`, followed by indented `device_path=wallpaper_path` lines and optional `tags=comma,separated` lines. Schedule entries are `profile_name,hour,minute,enabled`.
+JSON file with `profiles` and `schedule` top-level keys, serialized via `serde`. Example:
+
+```json
+{
+  "profiles": {
+    "profile_name": {
+      "monitor_wallpapers": {
+        "\\\\?\\DISPLAY#...": "C:\\path\\to\\wallpaper.png"
+      },
+      "tags": ["tag1", "tag2"]
+    }
+  },
+  "schedule": [
+    {
+      "profile_name": "profile_name",
+      "hour": 8,
+      "minute": 0,
+      "enabled": true
+    }
+  ]
+}
+```
