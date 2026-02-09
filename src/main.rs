@@ -7,6 +7,7 @@ use gtk4::DropDown;
 use crate::wallpaper_manager::WallpaperManager;
 
 mod wallpaper_manager;
+//mod wallpaper_source;
 
 #[derive(Clone)]
 struct WallpaperData {
