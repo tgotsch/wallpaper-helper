@@ -1,7 +1,5 @@
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::fs;
-use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -9,58 +7,8 @@ use std::thread;
 use std::time::Duration;
 use chrono::{Local, Timelike};
 use serde::{Serialize, Deserialize};
-use winapi::um::winuser::MONITORINFOF_PRIMARY;
-use windows::core::{BOOL, GUID, HRESULT, HSTRING, Result, PWSTR};
 
-use windows::Win32::UI::Shell::{IDesktopWallpaper, DesktopWallpaper};
-use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW};
-use windows::Win32::Foundation::{RECT, LPARAM, FALSE, TRUE};
-use windows::Win32::System::Com::{CoCreateInstance, CoInitialize, CoTaskMemFree, CoUninitialize, CLSCTX_ALL};
-
-// Desktop wallpaper position constants
-#[derive(Debug, Clone, Copy)]
-#[repr(i32)]
-pub enum DesktopWallpaperPosition {
-    Center = 0,
-    Tile = 1,
-    Stretch = 2,
-    Fit = 3,
-    Fill = 4,
-    Span = 5,
-}
-
-impl DesktopWallpaperPosition {
-    fn to_string(&self) -> &'static str {
-        match self {
-            Self::Center => "Center",
-            Self::Tile => "Tile",
-            Self::Stretch => "Stretch",
-            Self::Fit => "Fit",
-            Self::Fill => "Fill",
-            Self::Span => "Span",
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct MonitorInfo {
-    pub handle: HMONITOR,
-    pub rect: RECT,
-    pub device_name: String,
-    pub is_primary: bool,
-}
-
-impl std::fmt::Debug for MonitorInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MonitorInfo")
-            .field("handle", &(self.handle.0 as usize))
-            .field("device_name", &self.device_name)
-            .field("rect", &format!("({}, {}, {}, {})",
-                                    self.rect.left, self.rect.top, self.rect.right, self.rect.bottom))
-            .field("is_primary", &self.is_primary)
-            .finish()
-    }
-}
+use crate::backend::{MonitorInfo, WallpaperBackend, create_backend};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WallpaperProfile {
@@ -84,388 +32,83 @@ struct Config {
     schedule: Vec<ScheduleEntry>,
 }
 
-#[derive(Clone)]
 pub struct WallpaperManager {
     pub monitors: Vec<MonitorInfo>,
     pub profiles: HashMap<String, WallpaperProfile>,
     pub schedule: Vec<ScheduleEntry>,
     pub scheduler_running: Arc<AtomicBool>,
-}
-
-// Helper functions for Windows API
-fn wide_string_from_str(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(Some(0)).collect()
-}
-
-fn string_from_wide_ptr(ptr: *mut u16) -> String {
-    if ptr.is_null() {
-        return String::new();
-    }
-
-    unsafe {
-        let mut len = 0;
-        let mut temp_ptr = ptr;
-        while *temp_ptr != 0 {
-            len += 1;
-            temp_ptr = temp_ptr.add(1);
-        }
-
-        let slice = std::slice::from_raw_parts(ptr, len);
-        String::from_utf16_lossy(slice)
-    }
-}
-
-unsafe extern "system" fn monitor_enum_proc(
-    hmonitor: HMONITOR,
-    _hdc_monitor: HDC,
-    _lprc_monitor: *mut RECT,
-    dwdata: LPARAM,
-) -> BOOL {
-    let monitors = &mut *(dwdata.0 as *mut Vec<MonitorInfo>);
-
-    let mut mi: MONITORINFOEXW = std::mem::zeroed();
-    mi.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
-
-    if GetMonitorInfoW(hmonitor, &mut mi as *mut _ as *mut _) != FALSE {
-        let device_name = String::from_utf16_lossy(&mi.szDevice)
-            .trim_end_matches('\0')
-            .to_string();
-
-        let monitor_info = MonitorInfo {
-            handle: hmonitor,
-            rect: mi.monitorInfo.rcMonitor,
-            device_name,
-            is_primary: (mi.monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0,
-        };
-
-        monitors.push(monitor_info);
-    }
-
-    TRUE
+    backend: Box<dyn WallpaperBackend>,
 }
 
 impl WallpaperManager {
     pub fn new() -> Self {
-        let mut manager = Self {
-            monitors: Vec::new(),
+        let mut backend = create_backend();
+        let monitors = backend.refresh_monitors();
+
+        println!("\n=== Monitor Information ===");
+        println!("Found {} monitors:", monitors.len());
+        for (i, monitor) in monitors.iter().enumerate() {
+            println!("  {}. {}{} - {}x{}",
+                     i + 1,
+                     monitor.device_name,
+                     if monitor.is_primary { " (Primary)" } else { "" },
+                     monitor.width,
+                     monitor.height,
+            );
+        }
+        println!("===========================\n");
+
+        Self {
+            monitors,
             profiles: HashMap::new(),
             schedule: Vec::new(),
             scheduler_running: Arc::new(AtomicBool::new(false)),
-        };
-        manager.refresh_monitors();
-        manager
+            backend,
+        }
     }
 
     fn refresh_monitors(&mut self) {
-        self.monitors.clear();
-
-        unsafe {
-            EnumDisplayMonitors(
-                Option::None,
-                Option::None,
-                Some(monitor_enum_proc),
-                LPARAM(&self.monitors as *const _ as isize),
-            );
-        }
-
-        let wallpaper_monitor_ids = self.get_desktop_wallpaper_monitor_ids();
-
-        for (i, (display_name, wallpaper_monitor_id)) in wallpaper_monitor_ids.iter().enumerate()
-        {
-            self.monitors[i].device_name = wallpaper_monitor_id.to_string(); //stupid hack
-        }
+        self.monitors = self.backend.refresh_monitors();
 
         println!("\n=== Monitor Information ===");
-        println!("EnumDisplayMonitors found {} monitors:", self.monitors.len());
-
+        println!("Found {} monitors:", self.monitors.len());
         for (i, monitor) in self.monitors.iter().enumerate() {
             println!("  {}. {}{} - {}x{}",
                      i + 1,
                      monitor.device_name,
                      if monitor.is_primary { " (Primary)" } else { "" },
-                     monitor.rect.right - monitor.rect.left,
-                     monitor.rect.bottom - monitor.rect.top
+                     monitor.width,
+                     monitor.height,
             );
-        }
-
-        println!("\nIDesktopWallpaper found {} monitors:", wallpaper_monitor_ids.len());
-        for (i, (display_name, wallpaper_monitor_id)) in wallpaper_monitor_ids.iter().enumerate() {
-            println!("  {}. Display: {}", i + 1, display_name);
-            println!("     Wallpaper ID: {}", wallpaper_monitor_id);
-
-            let current_wallpaper = self.get_current_wallpaper_by_monitor_id(wallpaper_monitor_id);
-            if !current_wallpaper.is_empty() {
-                println!("     Current wallpaper: {}", current_wallpaper);
-            }
         }
         println!("===========================\n");
     }
 
     pub fn get_current_wallpaper_by_monitor_id(&self, monitor_id: &str) -> String {
-        let monitor_id_wide = HSTRING::from(monitor_id);
-
-        unsafe {
-            let hr_init = CoInitialize(Option::None);
-            let com_initialized = hr_init == HRESULT(0); // S_OK
-
-            let mut result = String::new();
-
-            let hr: Result<IDesktopWallpaper> = CoCreateInstance(
-                &DesktopWallpaper,
-                None,
-                CLSCTX_ALL,
-            );
-
-            if hr.is_ok() {
-                let desktop = hr.unwrap();
-                let hr = desktop.GetWallpaper(
-                    &monitor_id_wide
-                );
-
-                if hr.is_ok() {
-                    let ptr = hr.unwrap().0;
-                    result = string_from_wide_ptr(ptr);
-                    CoTaskMemFree(Some(ptr as _));
-                }
-
-            }
-
-            if com_initialized {
-                CoUninitialize();
-            }
-
-            result
-        }
-    }
-
-    fn get_desktop_wallpaper_monitor_ids(&self) -> Vec<(String, String)> {
-        let mut monitor_ids = Vec::new();
-
-        unsafe {
-            let hr_init = CoInitialize(None);
-            let com_initialized = hr_init == HRESULT(0);
-
-            let hr: Result<IDesktopWallpaper> = CoCreateInstance(
-                &DesktopWallpaper,
-                None,
-                CLSCTX_ALL,
-            );
-
-            if hr.is_ok() {
-                let wallpaper = hr.unwrap();
-                let count_res: Result<u32> = wallpaper.GetMonitorDevicePathCount();
-                if count_res.is_ok() {
-                    let count = count_res.unwrap();
-                    for i in 0..count {
-                        let mut monitor_id_res: Result<PWSTR> = wallpaper.GetMonitorDevicePathAt(i);
-                        if monitor_id_res.is_ok()
-                        {
-                            let str_ptr = monitor_id_res.unwrap();
-                            let monitor_id_str = string_from_wide_ptr(str_ptr.0);
-
-                            // Try to match with monitor list
-                            let mut display_name = format!("Monitor {}", i + 1);
-                            for monitor in &self.monitors {
-                                if let Some(device_part) = monitor.device_name.strip_prefix("\\\\.\\") {
-                                    if monitor_id_str.contains(device_part) {
-                                        display_name = monitor.device_name.clone();
-                                        break;
-                                    }
-                                }
-                            }
-
-                            monitor_ids.push((display_name, monitor_id_str));
-                            CoTaskMemFree(Some(str_ptr.0 as _));
-                        }
-                    }
-                }
-            }
-
-            if com_initialized {
-                CoUninitialize();
-            }
-        }
-
-        monitor_ids
-    }
-
-    fn set_wallpaper_for_monitor(&self, device_name: &str, wallpaper_path: &str) -> bool {
-        let wallpaper_path_wide = HSTRING::from(wallpaper_path);
-
-        unsafe {
-            let hr_init = CoInitialize(None);
-            let com_initialized = hr_init == HRESULT(0);
-
-            let hr: Result<IDesktopWallpaper> = CoCreateInstance(
-                &DesktopWallpaper,
-                None,
-                CLSCTX_ALL,
-            );
-
-            let mut success = false;
-
-            if hr.is_ok() {
-                let wallpaper = hr.unwrap();
-                // Method 1: Try to find the correct monitor ID
-                let count_res: Result<u32> = wallpaper.GetMonitorDevicePathCount();
-                if count_res.is_ok() {
-                    let count = count_res.unwrap();
-
-                    for i in 0..count {
-                        let mut monitor_id_res: Result<PWSTR> = wallpaper.GetMonitorDevicePathAt(i);
-                        if monitor_id_res.is_ok()
-                        {
-                            let str_ptr = monitor_id_res.unwrap();
-                            let monitor_id_str = string_from_wide_ptr(str_ptr.0);
-
-                            // Check if this monitor matches our device name
-                            let is_match = monitor_id_str == device_name
-                                || monitor_id_str.contains(device_name)
-                                || device_name.contains(&monitor_id_str);
-
-                            if is_match {
-                                println!("Trying to set wallpaper for monitor: {}", monitor_id_str);
-                                let hr = wallpaper.SetWallpaper(
-                                    str_ptr,
-                                    &wallpaper_path_wide,
-                                );
-
-                                match hr {
-                                    Ok(_) => {
-                                        println!("Successfully set wallpaper using monitor ID: {}", monitor_id_str);
-                                        success = true;
-                                        CoTaskMemFree(Some(str_ptr.0 as _));
-                                        break;
-                                    }
-                                    Err(E) => {
-                                        println!("Failed to set wallpaper, HRESULT: 0x{:X}", E.code().0);
-                                    }
-                                }
-                            }
-
-                            CoTaskMemFree(Some(str_ptr.0 as _));
-                        }
-                    }
-                }
-
-                // Method 2: Try using device name directly
-                if !success {
-                    let device_name_wide = HSTRING::from(device_name);
-                    println!("Trying direct device name: {}", device_name);
-                    let hr = wallpaper.SetWallpaper(
-                        &device_name_wide,
-                        &wallpaper_path_wide,
-                    );
-
-                    if hr.is_ok() {
-                        println!("Successfully set wallpaper using direct device name");
-                        success = true;
-                    }
-                }
-
-                // Method 3: Try setting for all monitors (NULL parameter)
-                // if !success {
-                //     println!("Trying to set wallpaper for all monitors");
-                //     let hr = wallpaper.SetWallpaper(
-                //         std::ptr::null(),
-                //         wallpaper_path_wide.as_ptr(),
-                //     );
-                //
-                //     if hr == 0 {
-                //         println!("Successfully set wallpaper for all monitors");
-                //         success = true;
-                //     }
-                // }
-            }
-
-            if com_initialized {
-                CoUninitialize();
-            }
-
-            success
-        }
-    }
-
-    /*fn set_wallpaper_fallback(&self, wallpaper_path: &str) -> bool {
-        let wallpaper_path_wide = wide_string_from_str(wallpaper_path);
-
-        unsafe {
-            let result = SystemParametersInfoW(
-                SPI_SETDESKWALLPAPER,
-                0,
-                wallpaper_path_wide.as_ptr() as *mut c_void,
-                SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
-            );
-
-            result != FALSE
-        }
-    }*/
-
-    fn set_wallpaper_for_monitor_with_fallback(&self, device_name: &str, wallpaper_path: &str) -> bool {
-        // First try the modern IDesktopWallpaper approach
-        if self.set_wallpaper_for_monitor(device_name, wallpaper_path) {
-            return true;
-        }
-
-        // If that fails, fall back to SystemParametersInfo
-        println!("IDesktopWallpaper failed for {}, using fallback method", device_name);
-        // self.set_wallpaper_fallback(wallpaper_path)
-        return false;
+        self.backend.get_current_wallpaper(monitor_id)
     }
 
     pub fn print_monitors(&mut self) {
         self.refresh_monitors();
 
-        let wallpaper_monitor_ids = self.get_desktop_wallpaper_monitor_ids();
-
         println!("Available monitors for wallpaper setting:");
         println!("==========================================");
 
-        if wallpaper_monitor_ids.is_empty() {
-            println!("No monitors found via IDesktopWallpaper interface.");
-            println!("Using fallback EnumDisplayMonitors data:");
+        for (i, monitor) in self.monitors.iter().enumerate() {
+            println!("{}. {}{} - {}x{}",
+                     i + 1,
+                     monitor.device_name,
+                     if monitor.is_primary { " (Primary)" } else { "" },
+                     monitor.width,
+                     monitor.height,
+            );
+            println!("   Use device name: {}", monitor.device_name);
 
-            for (i, monitor) in self.monitors.iter().enumerate() {
-                println!("{}. {}{} - {}x{}",
-                         i + 1,
-                         monitor.device_name,
-                         if monitor.is_primary { " (Primary)" } else { "" },
-                         monitor.rect.right - monitor.rect.left,
-                         monitor.rect.bottom - monitor.rect.top
-                );
-                println!("   Use device name: {}\n", monitor.device_name);
+            let current_wallpaper = self.backend.get_current_wallpaper(&monitor.device_name);
+            if !current_wallpaper.is_empty() {
+                println!("   Current wallpaper: {}", current_wallpaper);
             }
-        } else {
-            for (i, (display_name, wallpaper_monitor_id)) in wallpaper_monitor_ids.iter().enumerate() {
-                // Find corresponding monitor info
-                let monitor_info = self.monitors.iter().find(|monitor| {
-                    if let Some(device_part) = monitor.device_name.strip_prefix("\\\\.\\") {
-                        wallpaper_monitor_id.contains(device_part)
-                    } else {
-                        false
-                    }
-                });
-
-                print!("{}. ", i + 1);
-                if let Some(info) = monitor_info {
-                    println!("{}{} - {}x{}",
-                             info.device_name,
-                             if info.is_primary { " (Primary)" } else { "" },
-                             info.rect.right - info.rect.left,
-                             info.rect.bottom - info.rect.top
-                    );
-                } else {
-                    println!("Monitor {}", i + 1);
-                }
-
-                println!("   Use device name: {}", wallpaper_monitor_id);
-
-                let current_wallpaper = self.get_current_wallpaper_by_monitor_id(wallpaper_monitor_id);
-                if !current_wallpaper.is_empty() {
-                    println!("   Current wallpaper: {}", current_wallpaper);
-                }
-                println!();
-            }
+            println!();
         }
 
         println!("==========================================");
@@ -536,7 +179,7 @@ impl WallpaperManager {
             println!("Applying profile '{}'...", profile_name);
 
             for (device_name, wallpaper_path) in &profile.monitor_wallpapers {
-                if !self.set_wallpaper_for_monitor_with_fallback(device_name, wallpaper_path) {
+                if !self.backend.set_wallpaper(device_name, wallpaper_path) {
                     println!("Failed to set wallpaper for {}", device_name);
                     success = false;
                 } else {
@@ -616,7 +259,7 @@ impl WallpaperManager {
         self.scheduler_running.store(true, Ordering::Relaxed);
         let scheduler_running = self.scheduler_running.clone();
         let schedule = self.schedule.clone();
-        let profiles = self.profiles.clone();
+        let _profiles = self.profiles.clone();
 
         thread::spawn(move || {
             while scheduler_running.load(Ordering::Relaxed) {
@@ -626,10 +269,7 @@ impl WallpaperManager {
 
                 for entry in &schedule {
                     if entry.enabled && entry.hour == current_hour && entry.minute == current_minute {
-                        // Apply profile logic would go here
-                        // We'd need to pass back to the main manager somehow
                         println!("Time to apply profile: {}", entry.profile_name);
-                        // Sleep for a minute to avoid reapplying
                         thread::sleep(Duration::from_secs(60));
                     }
                 }
@@ -650,16 +290,13 @@ impl WallpaperManager {
         println!("Scheduler stopped.");
     }
 
-    pub fn add_tag(&mut self, tag_name: &str, profile_name: &str)
-    {
-        if let Some(found) =self.profiles.get_mut(profile_name)
-        {
+    pub fn add_tag(&mut self, tag_name: &str, profile_name: &str) {
+        if let Some(found) = self.profiles.get_mut(profile_name) {
             found.tags.push(tag_name.to_string());
         }
     }
 
-    pub fn get_tags(&self, profile_name: &str) -> Vec<String>
-    {
+    pub fn get_tags(&self, profile_name: &str) -> Vec<String> {
         self.profiles.values().filter(|profile| profile.name == profile_name).map(|profile| profile.tags.clone()).flatten().collect()
     }
 

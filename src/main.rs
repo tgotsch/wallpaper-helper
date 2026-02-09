@@ -6,6 +6,7 @@ use gtk::{ApplicationWindow, Application, Button, Box, Image, FileChooserDialog}
 use gtk4::DropDown;
 use crate::wallpaper_manager::WallpaperManager;
 
+mod backend;
 mod wallpaper_manager;
 //mod wallpaper_source;
 
@@ -245,7 +246,7 @@ fn update_wallpaper_images_from_profile(dropdown: &DropDown,
         if let Ok(string_object) = selected_item.downcast::<gtk::StringObject>() {
             let selected_text = string_object.string();
             if let Some(selected_profile) = manager.borrow().profiles.get(selected_text.as_str()) {
-                for (i, pair) in selected_profile.monitor_wallpapers.iter().enumerate() {
+                for (_i, pair) in selected_profile.monitor_wallpapers.iter().enumerate() {
                     let found_res = wallpapers.iter().find(|w| w.monitor_name == *pair.0);
 
                     if let Some(found) = found_res {
