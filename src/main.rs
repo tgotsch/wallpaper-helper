@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use gtk4 as gtk;
 use gtk::prelude::*;
-use gtk::{ApplicationWindow, Application, Button, Box, Image, FileChooserDialog};
+use gtk::{ApplicationWindow, Application, Button, Box, Picture, FileChooserDialog};
 use gtk4::DropDown;
 use crate::wallpaper_manager::WallpaperManager;
 
@@ -14,20 +14,21 @@ mod wallpaper_manager;
 struct WallpaperData {
     monitor_name: String,
     filename:  String,
-    image: Image,
+    image: Picture,
     button: Button,
 }
 
 impl WallpaperData {
     fn new(monitor_name: String, initial_filename: String) -> Self {
-        let image = Image::new();
+        let image = Picture::new();
         let button = Button::new();
 
         // Set initial image if file exists
         if !initial_filename.is_empty() {
-            image.set_from_file(Some(&initial_filename));
+            image.set_filename(Some(&initial_filename));
         }
 
+        image.set_can_shrink(true);
         image.set_hexpand(true);
         image.set_vexpand(true);
 
@@ -91,7 +92,7 @@ impl WallpaperData {
                             let path_str = path.to_string_lossy().to_string();
 
                             // Update the image
-                            image_clone.set_from_file(Some(&path_str));
+                            image_clone.set_filename(Some(&path_str));
 
                             // Update the data structure
                             if let Ok(mut wallpapers_borrowed) = wallpapers_clone2.try_borrow_mut() {
@@ -254,7 +255,7 @@ fn update_wallpaper_images_from_profile(dropdown: &DropDown,
                     let found_res = wallpapers.iter().find(|w| w.monitor_name == *pair.0);
 
                     if let Some(found) = found_res {
-                        found.image.set_from_file(Some(pair.1));
+                        found.image.set_filename(Some(pair.1.as_str()));
                     }
                 }
             }
