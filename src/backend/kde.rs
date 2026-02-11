@@ -26,10 +26,17 @@ impl KdeBackend {
 
     fn parse_kscreen_outputs() -> Vec<MonitorInfo> {
         let output = match Command::new("kscreen-doctor").arg("--outputs").output() {
-            Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+            Ok(o) => {
+                println!(
+                    "kscreen-doctor failed with exit code {:?}, falling back to sysfs",
+                    o.status.code()
+                );
+                return Self::parse_sysfs_outputs();
+            }
             Err(e) => {
-                println!("Failed to run kscreen-doctor: {}", e);
-                return Vec::new();
+                println!("Failed to run kscreen-doctor: {}, falling back to sysfs", e);
+                return Self::parse_sysfs_outputs();
             }
         };
 
@@ -91,114 +98,103 @@ impl KdeBackend {
             monitors.push((name, current_width, current_height, current_primary, current_x, current_y));
         }
 
-        monitors.into_iter().map(|(name, w, h, primary, _x, _y)| {
+        let result: Vec<MonitorInfo> = monitors.into_iter().map(|(name, w, h, primary, _x, _y)| {
             MonitorInfo {
                 device_name: name,
                 width: w,
                 height: h,
                 is_primary: primary,
             }
-        }).collect()
+        }).collect();
+
+        // If kscreen-doctor ran but returned no monitors, try sysfs fallback
+        if result.is_empty() {
+            println!("kscreen-doctor returned no monitors, falling back to sysfs");
+            return Self::parse_sysfs_outputs();
+        }
+
+        result
     }
 
-    fn build_screen_map(monitors: &[MonitorInfo]) -> HashMap<String, i32> {
-        let qdbus = Self::qdbus_cmd();
+    /// Fallback monitor detection using sysfs when kscreen-doctor fails.
+    /// This reads from /sys/class/drm/card*-* to find connected displays.
+    fn parse_sysfs_outputs() -> Vec<MonitorInfo> {
+        use std::fs;
+        use std::path::Path;
 
-        // Query plasma for desktop count and geometry to map connector names to screen indices
-        let qdbus_output = Command::new(qdbus)
-            .args([
-                "org.kde.plasmashell",
-                "/PlasmaShell",
-                "org.kde.PlasmaShell.evaluateScript",
-                "var result = []; for (var i = 0; i < desktops().length; i++) { var d = desktops()[i]; result.push(d.screen + '|' + d.screenGeometry.x + ',' + d.screenGeometry.y + ',' + d.screenGeometry.width + ',' + d.screenGeometry.height); } result.join('\\n');",
-            ])
-            .output();
+        let mut monitors = Vec::new();
+        let drm_path = Path::new("/sys/class/drm");
 
-        let mut map = HashMap::new();
-
-        let qdbus_str = match qdbus_output {
-            Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
-            Err(_) => {
-                // qdbus unavailable, fall back to sequential assignment
-                for (i, monitor) in monitors.iter().enumerate() {
-                    map.insert(monitor.device_name.clone(), i as i32);
-                }
-                return map;
+        let entries = match fs::read_dir(drm_path) {
+            Ok(e) => e,
+            Err(e) => {
+                println!("Failed to read /sys/class/drm: {}", e);
+                return monitors;
             }
         };
 
-        // Parse kscreen-doctor output for connector name -> (x, y) position
-        let kscreen_output = Command::new("kscreen-doctor").arg("--outputs").output();
-        let mut entries: Vec<(String, i32, i32)> = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
 
-        if let Ok(o) = kscreen_output {
-            let text = String::from_utf8_lossy(&o.stdout).to_string();
-            let mut cur_name: Option<String> = None;
-            let mut cur_x: i32 = 0;
-            let mut cur_y: i32 = 0;
-
-            for line in text.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("Output:") {
-                    if let Some(name) = cur_name.take() {
-                        entries.push((name, cur_x, cur_y));
-                    }
-                    let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                    if parts.len() >= 3 {
-                        cur_name = Some(parts[2].to_string());
-                    }
-                    cur_x = 0;
-                    cur_y = 0;
-                }
-                if trimmed.starts_with("Geometry:") {
-                    let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                    if parts.len() >= 2 {
-                        let pos_parts: Vec<&str> = parts[1].split(',').collect();
-                        if pos_parts.len() >= 2 {
-                            cur_x = pos_parts[0].parse().unwrap_or(0);
-                            cur_y = pos_parts[1].parse().unwrap_or(0);
-                        }
-                    }
-                }
-            }
-            if let Some(name) = cur_name.take() {
-                entries.push((name, cur_x, cur_y));
-            }
-        }
-
-        // Match qdbus screen indices to kscreen connector names by geometry position
-        // Each qdbus line: "screen_index|x,y,w,h"
-        for line in qdbus_str.lines() {
-            let line = line.trim();
-            if line.is_empty() {
+            // Skip entries that don't match card*-* pattern (e.g., "card1-DP-1")
+            if !name.starts_with("card") || !name.contains('-') {
                 continue;
             }
-            if let Some((screen_str, geom_str)) = line.split_once('|') {
-                let screen_idx: i32 = match screen_str.parse() {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                let geom_parts: Vec<&str> = geom_str.split(',').collect();
-                if geom_parts.len() < 2 {
-                    continue;
-                }
-                let gx: i32 = geom_parts[0].parse().unwrap_or(-1);
-                let gy: i32 = geom_parts[1].parse().unwrap_or(-1);
 
-                for (name, kx, ky) in &entries {
-                    if *kx == gx && *ky == gy {
-                        map.insert(name.clone(), screen_idx);
-                        break;
-                    }
-                }
+            // Extract connector name (e.g., "DP-1" from "card1-DP-1")
+            let connector_name = match name.split_once('-') {
+                Some((_, connector)) => connector.to_string(),
+                None => continue,
+            };
+
+            let dir_path = entry.path();
+
+            // Check if connected
+            let status_path = dir_path.join("status");
+            let status = fs::read_to_string(&status_path).unwrap_or_default();
+            if status.trim() != "connected" {
+                continue;
             }
+
+            // Parse first mode for resolution (e.g., "1920x1080")
+            let modes_path = dir_path.join("modes");
+            let modes_content = fs::read_to_string(&modes_path).unwrap_or_default();
+            let first_mode = modes_content.lines().next().unwrap_or("");
+
+            let (width, height) = if let Some((w, h)) = first_mode.split_once('x') {
+                (w.parse().unwrap_or(0), h.parse().unwrap_or(0))
+            } else {
+                (0, 0)
+            };
+
+            monitors.push(MonitorInfo {
+                device_name: connector_name,
+                width,
+                height,
+                is_primary: false, // Cannot determine primary from sysfs alone
+            });
         }
 
-        // If mapping is still empty, fall back to sequential assignment
-        if map.is_empty() {
-            for (i, monitor) in monitors.iter().enumerate() {
-                map.insert(monitor.device_name.clone(), i as i32);
-            }
+        // Sort by connector name for consistent ordering
+        monitors.sort_by(|a, b| a.device_name.cmp(&b.device_name));
+
+        // Mark first monitor as primary if we have any
+        if !monitors.is_empty() {
+            monitors[0].is_primary = true;
+        }
+
+        println!("Detected {} monitors via sysfs fallback", monitors.len());
+        monitors
+    }
+
+    fn build_screen_map(monitors: &[MonitorInfo]) -> HashMap<String, i32> {
+        let mut map = HashMap::new();
+
+        // Assign monitors to screen indices sequentially.
+        // The Plasma desktop screen indices (0, 1, 2, ...) correspond to the
+        // order monitors are detected, which matches our sorted monitor list.
+        for (i, monitor) in monitors.iter().enumerate() {
+            map.insert(monitor.device_name.clone(), i as i32);
         }
 
         map
@@ -221,7 +217,7 @@ impl WallpaperBackend for KdeBackend {
         let qdbus = Self::qdbus_cmd();
 
         let script = format!(
-            "var d = desktops(); for (var i = 0; i < d.length; i++) {{ if (d[i].screen == {}) {{ print(d[i].readConfig('Image', '').replace('file://', '')); break; }} }}",
+            "var d = desktops(); for (var i = 0; i < d.length; i++) {{ if (d[i].screen == {}) {{ d[i].currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General']; print(d[i].readConfig('Image', '').replace('file://', '')); break; }} }}",
             screen_idx
         );
 
@@ -262,7 +258,7 @@ impl WallpaperBackend for KdeBackend {
         };
 
         let script = format!(
-            "var d = desktops(); for (var i = 0; i < d.length; i++) {{ if (d[i].screen == {}) {{ d[i].writeConfig('Image', '{}'); d[i].reloadConfig(); break; }} }}",
+            "var d = desktops(); for (var i = 0; i < d.length; i++) {{ if (d[i].screen == {}) {{ d[i].currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General']; d[i].writeConfig('Image', '{}'); d[i].reloadConfig(); break; }} }}",
             screen_idx, file_url
         );
 

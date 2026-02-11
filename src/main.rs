@@ -170,13 +170,17 @@ fn build_ui(app: &gtk::Application) {
         let manager_clone = manager.clone();
         move |_|
             {
+                println!("Apply button clicked");
                 if let Some(selected_item) = dropdown.selected_item()
                 {
                     if let Ok(string_object) = selected_item.downcast::<gtk::StringObject>()
                     {
                         let selected_text = string_object.string();
+                        println!("Applying profile: '{}'", selected_text);
                         manager_clone.borrow_mut().apply_profile(&selected_text);
                     }
+                } else {
+                    println!("No profile selected in dropdown");
                 }
             }
     });
