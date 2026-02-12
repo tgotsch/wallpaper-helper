@@ -26,10 +26,44 @@ pub struct ScheduleEntry {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MonitorMapping {
+    Simple(String),
+    Detailed {
+        device: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
+    },
+}
+
+impl MonitorMapping {
+    pub fn device(&self) -> &str {
+        match self {
+            MonitorMapping::Simple(s) => s,
+            MonitorMapping::Detailed { device, .. } => device,
+        }
+    }
+
+    pub fn resolution(&self) -> Option<(u32, u32)> {
+        match self {
+            MonitorMapping::Simple(_) => None,
+            MonitorMapping::Detailed { width, height, .. } => {
+                match (width, height) {
+                    (Some(w), Some(h)) => Some((*w, *h)),
+                    _ => None,
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PlatformConfig {
     pub wallpaper_base_path: String,
-    pub monitor_map: HashMap<String, String>, // alias -> platform-specific device name
+    pub monitor_map: HashMap<String, MonitorMapping>, // alias -> platform-specific device name (+ optional resolution)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,8 +142,8 @@ impl WallpaperManager {
         { &self.platform_configs.linux }
     }
 
-    fn resolve_alias_to_device(&self, alias: &str) -> Option<&String> {
-        self.current_platform_config().monitor_map.get(alias)
+    fn resolve_alias_to_device(&self, alias: &str) -> Option<&str> {
+        self.current_platform_config().monitor_map.get(alias).map(|m| m.device())
     }
 
     pub fn resolve_wallpaper_path(&self, relative_path: &str) -> String {
@@ -136,9 +170,20 @@ impl WallpaperManager {
 
     pub fn get_alias_monitor_info(&self) -> Vec<(String, Option<MonitorInfo>)> {
         self.aliases.iter().map(|alias| {
-            let monitor_info = self.resolve_alias_to_device(alias)
-                .and_then(|dev| self.monitors.iter().find(|m| m.device_name == *dev))
+            let mapping = self.current_platform_config().monitor_map.get(alias);
+            let mut monitor_info = mapping
+                .map(|m| m.device())
+                .and_then(|dev| self.monitors.iter().find(|m| m.device_name == dev))
                 .cloned();
+
+            // Override resolution from config if specified
+            if let (Some(ref mut info), Some(mapping)) = (&mut monitor_info, mapping) {
+                if let Some((w, h)) = mapping.resolution() {
+                    info.width = w;
+                    info.height = h;
+                }
+            }
+
             (alias.clone(), monitor_info)
         }).collect()
     }
@@ -264,7 +309,7 @@ impl WallpaperManager {
 
             for (alias, relative_path) in &profile.monitor_wallpapers {
                 let device_name = match self.resolve_alias_to_device(alias) {
-                    Some(dev) => dev.clone(),
+                    Some(dev) => dev.to_string(),
                     None => {
                         println!("No device mapping found for alias '{}' on this platform", alias);
                         success = false;
@@ -450,8 +495,9 @@ impl WallpaperManager {
             self.aliases.sort();
 
             for alias in &self.aliases {
-                if let Some(device) = self.current_platform_config().monitor_map.get(alias) {
-                    if !self.monitors.iter().any(|m| m.device_name == *device) {
+                if let Some(mapping) = self.current_platform_config().monitor_map.get(alias) {
+                    let device = mapping.device();
+                    if !self.monitors.iter().any(|m| m.device_name == device) {
                         println!("Warning: alias '{}' maps to device '{}' which was not detected", alias, device);
                     }
                 }
@@ -481,7 +527,7 @@ impl WallpaperManager {
 
                 let mut identity_map = HashMap::new();
                 for name in &device_names {
-                    identity_map.insert(name.clone(), name.clone());
+                    identity_map.insert(name.clone(), MonitorMapping::Simple(name.clone()));
                 }
 
                 #[cfg(target_os = "linux")]
