@@ -14,7 +14,7 @@ use crate::backend::{MonitorInfo, WallpaperBackend, create_backend};
 pub struct WallpaperProfile {
     #[serde(skip)]
     pub name: String,
-    pub monitor_wallpapers: HashMap<String, String>, // deviceName -> wallpaperPath
+    pub monitor_wallpapers: HashMap<String, String>, // alias -> relative wallpaper path
     pub tags: Vec<String>,
 }
 
@@ -26,14 +26,46 @@ pub struct ScheduleEntry {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlatformConfig {
+    pub wallpaper_base_path: String,
+    pub monitor_map: HashMap<String, String>, // alias -> platform-specific device name
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformConfigs {
+    #[serde(default)]
+    pub windows: PlatformConfig,
+    #[serde(default)]
+    pub linux: PlatformConfig,
+}
+
+impl Default for PlatformConfigs {
+    fn default() -> Self {
+        Self {
+            windows: PlatformConfig::default(),
+            linux: PlatformConfig::default(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Config {
+    platform_config: PlatformConfigs,
+    profiles: HashMap<String, WallpaperProfile>,
+    schedule: Vec<ScheduleEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyConfig {
     profiles: HashMap<String, WallpaperProfile>,
     schedule: Vec<ScheduleEntry>,
 }
 
 pub struct WallpaperManager {
     pub monitors: Vec<MonitorInfo>,
+    pub aliases: Vec<String>,
+    pub platform_configs: PlatformConfigs,
     pub profiles: HashMap<String, WallpaperProfile>,
     pub schedule: Vec<ScheduleEntry>,
     pub scheduler_running: Arc<AtomicBool>,
@@ -60,11 +92,55 @@ impl WallpaperManager {
 
         Self {
             monitors,
+            aliases: Vec::new(),
+            platform_configs: PlatformConfigs::default(),
             profiles: HashMap::new(),
             schedule: Vec::new(),
             scheduler_running: Arc::new(AtomicBool::new(false)),
             backend,
         }
+    }
+
+    fn current_platform_config(&self) -> &PlatformConfig {
+        #[cfg(windows)]
+        { &self.platform_configs.windows }
+        #[cfg(target_os = "linux")]
+        { &self.platform_configs.linux }
+    }
+
+    fn resolve_alias_to_device(&self, alias: &str) -> Option<&String> {
+        self.current_platform_config().monitor_map.get(alias)
+    }
+
+    pub fn resolve_wallpaper_path(&self, relative_path: &str) -> String {
+        if relative_path.is_empty() {
+            return String::new();
+        }
+        let base = &self.current_platform_config().wallpaper_base_path;
+        if base.is_empty() {
+            return relative_path.to_string();
+        }
+        Path::new(base).join(relative_path).to_string_lossy().to_string()
+    }
+
+    pub fn make_relative_path(&self, absolute_path: &str) -> String {
+        let base = &self.current_platform_config().wallpaper_base_path;
+        if base.is_empty() {
+            return absolute_path.to_string();
+        }
+        match Path::new(absolute_path).strip_prefix(Path::new(base)) {
+            Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+            Err(_) => absolute_path.to_string(),
+        }
+    }
+
+    pub fn get_alias_monitor_info(&self) -> Vec<(String, Option<MonitorInfo>)> {
+        self.aliases.iter().map(|alias| {
+            let monitor_info = self.resolve_alias_to_device(alias)
+                .and_then(|dev| self.monitors.iter().find(|m| m.device_name == *dev))
+                .cloned();
+            (alias.clone(), monitor_info)
+        }).collect()
     }
 
     fn refresh_monitors(&mut self) {
@@ -84,8 +160,14 @@ impl WallpaperManager {
         println!("===========================\n");
     }
 
-    pub fn get_current_wallpaper_by_monitor_id(&self, monitor_id: &str) -> String {
-        self.backend.get_current_wallpaper(monitor_id)
+    pub fn get_current_wallpaper_by_alias(&self, alias: &str) -> String {
+        match self.resolve_alias_to_device(alias) {
+            Some(device) => self.backend.get_current_wallpaper(device),
+            None => {
+                println!("No device mapping found for alias '{}'", alias);
+                String::new()
+            }
+        }
     }
 
     pub fn print_monitors(&mut self) {
@@ -131,13 +213,13 @@ impl WallpaperManager {
         true
     }
 
-    pub fn set_wallpaper_in_profile(&mut self, profile_name: &str, device_name: &str, wallpaper_path: &str) -> bool {
+    pub fn set_wallpaper_in_profile(&mut self, profile_name: &str, alias: &str, wallpaper_path: &str) -> bool {
         if !self.profiles.contains_key(profile_name) {
             println!("Profile '{}' not found!", profile_name);
             return false;
         }
 
-        // Verify file exists
+        // Verify file exists (absolute path from file chooser)
         if !Path::new(wallpaper_path).exists() {
             println!("Wallpaper file not found: {}", wallpaper_path);
             return false;
@@ -153,20 +235,22 @@ impl WallpaperManager {
             }
         }
 
-        // Verify device name exists
-        let device_found = self.monitors.iter().any(|monitor| monitor.device_name == device_name);
-        if !device_found {
-            println!("Monitor device '{}' not found!", device_name);
-            println!("Available monitors:");
-            for monitor in &self.monitors {
-                println!("  {}", monitor.device_name);
+        // Validate alias exists
+        if !self.aliases.contains(&alias.to_string()) {
+            println!("Monitor alias '{}' not found!", alias);
+            println!("Available aliases:");
+            for a in &self.aliases {
+                println!("  {}", a);
             }
             return false;
         }
 
+        // Convert absolute path to relative for storage
+        let relative_path = self.make_relative_path(wallpaper_path);
+
         if let Some(profile) = self.profiles.get_mut(profile_name) {
-            profile.monitor_wallpapers.insert(device_name.to_string(), wallpaper_path.to_string());
-            println!("Added wallpaper to profile '{}' for monitor {}", profile_name, device_name);
+            profile.monitor_wallpapers.insert(alias.to_string(), relative_path);
+            println!("Added wallpaper to profile '{}' for monitor {}", profile_name, alias);
             true
         } else {
             false
@@ -178,12 +262,23 @@ impl WallpaperManager {
             let mut success = true;
             println!("Applying profile '{}'...", profile_name);
 
-            for (device_name, wallpaper_path) in &profile.monitor_wallpapers {
-                if !self.backend.set_wallpaper(device_name, wallpaper_path) {
-                    println!("Failed to set wallpaper for {}", device_name);
+            for (alias, relative_path) in &profile.monitor_wallpapers {
+                let device_name = match self.resolve_alias_to_device(alias) {
+                    Some(dev) => dev.clone(),
+                    None => {
+                        println!("No device mapping found for alias '{}' on this platform", alias);
+                        success = false;
+                        continue;
+                    }
+                };
+
+                let absolute_path = self.resolve_wallpaper_path(relative_path);
+
+                if !self.backend.set_wallpaper(&device_name, &absolute_path) {
+                    println!("Failed to set wallpaper for {} ({})", alias, device_name);
                     success = false;
                 } else {
-                    println!("Set wallpaper for {}", device_name);
+                    println!("Set wallpaper for {} ({})", alias, device_name);
                 }
             }
 
@@ -302,6 +397,7 @@ impl WallpaperManager {
 
     pub fn save_config(&self, filename: &str) -> bool {
         let config = Config {
+            platform_config: self.platform_configs.clone(),
             profiles: self.profiles.clone(),
             schedule: self.schedule.clone(),
         };
@@ -335,17 +431,69 @@ impl WallpaperManager {
             }
         };
 
-        match serde_json::from_str::<Config>(&contents) {
-            Ok(config) => {
-                self.profiles = config.profiles;
-                self.schedule = config.schedule;
+        // Try new format first
+        if let Ok(config) = serde_json::from_str::<Config>(&contents) {
+            self.platform_configs = config.platform_config;
+            self.profiles = config.profiles;
+            self.schedule = config.schedule;
 
-                // Populate the skipped `name` field from the HashMap keys
+            for (name, profile) in &mut self.profiles {
+                profile.name = name.clone();
+            }
+
+            // Build alias list from current platform's monitor_map
+            self.aliases = self.current_platform_config()
+                .monitor_map
+                .keys()
+                .cloned()
+                .collect();
+            self.aliases.sort();
+
+            for alias in &self.aliases {
+                if let Some(device) = self.current_platform_config().monitor_map.get(alias) {
+                    if !self.monitors.iter().any(|m| m.device_name == *device) {
+                        println!("Warning: alias '{}' maps to device '{}' which was not detected", alias, device);
+                    }
+                }
+            }
+
+            println!("Configuration loaded from {}", filename);
+            return true;
+        }
+
+        // Fall back to legacy format
+        match serde_json::from_str::<LegacyConfig>(&contents) {
+            Ok(legacy) => {
+                println!("Detected legacy config format. Please add platform_config section.");
+                self.profiles = legacy.profiles;
+                self.schedule = legacy.schedule;
+
                 for (name, profile) in &mut self.profiles {
                     profile.name = name.clone();
                 }
 
-                println!("Configuration loaded from {}", filename);
+                // Use device names as aliases for backward compatibility
+                let mut device_names: Vec<String> = self.profiles.values()
+                    .flat_map(|p| p.monitor_wallpapers.keys().cloned())
+                    .collect();
+                device_names.sort();
+                device_names.dedup();
+
+                let mut identity_map = HashMap::new();
+                for name in &device_names {
+                    identity_map.insert(name.clone(), name.clone());
+                }
+
+                #[cfg(target_os = "linux")]
+                {
+                    self.platform_configs.linux.monitor_map = identity_map;
+                }
+                #[cfg(windows)]
+                {
+                    self.platform_configs.windows.monitor_map = identity_map;
+                }
+
+                self.aliases = device_names;
                 true
             }
             Err(e) => {

@@ -130,21 +130,21 @@ fn build_ui(app: &gtk::Application) {
     let grid = gtk::Grid::new();
     grid.set_column_spacing(5);
 
-    for (i, monitor) in manager.borrow().monitors.iter().enumerate()
+    let alias_monitors = manager.borrow().get_alias_monitor_info();
+    for (i, (alias, monitor_info)) in alias_monitors.iter().enumerate()
     {
-        let wallpaper_str = manager.borrow().get_current_wallpaper_by_monitor_id(monitor.device_name.as_str());
+        let wallpaper_str = manager.borrow().get_current_wallpaper_by_alias(alias);
 
-        let wallpaper_data = WallpaperData::new(monitor.device_name.clone(), wallpaper_str.to_string());
+        let wallpaper_data = WallpaperData::new(alias.clone(), wallpaper_str.to_string());
         wallpaper_data.setup_click_handler(wallpapers.clone());
 
         wallpapers.borrow_mut().push(wallpaper_data.clone());
 
-        let button = Button::with_label(&*monitor.device_name);
-        button.connect_clicked(move |_| {
-            eprintln!("Clicked!");
-        });
-
-        let label = gtk::Label::new(Some(&monitor.device_name));
+        let label_text = match monitor_info {
+            Some(info) => format!("{} ({}x{})", alias, info.width, info.height),
+            None => format!("{} (not connected)", alias),
+        };
+        let label = gtk::Label::new(Some(&label_text));
 
         grid.attach(&label, i as i32, 0, 1, 1);
         grid.attach(&wallpaper_data.button, i as i32, 1, 1, 1);
@@ -250,12 +250,14 @@ fn update_wallpaper_images_from_profile(dropdown: &DropDown,
     if let Some(selected_item) = dropdown.selected_item() {
         if let Ok(string_object) = selected_item.downcast::<gtk::StringObject>() {
             let selected_text = string_object.string();
-            if let Some(selected_profile) = manager.borrow().profiles.get(selected_text.as_str()) {
-                for (_i, pair) in selected_profile.monitor_wallpapers.iter().enumerate() {
-                    let found_res = wallpapers.iter().find(|w| w.monitor_name == *pair.0);
+            let mgr = manager.borrow();
+            if let Some(selected_profile) = mgr.profiles.get(selected_text.as_str()) {
+                for (alias, relative_path) in &selected_profile.monitor_wallpapers {
+                    let found_res = wallpapers.iter().find(|w| w.monitor_name == *alias);
 
                     if let Some(found) = found_res {
-                        found.image.set_filename(Some(pair.1.as_str()));
+                        let absolute_path = mgr.resolve_wallpaper_path(relative_path);
+                        found.image.set_filename(Some(absolute_path.as_str()));
                     }
                 }
             }

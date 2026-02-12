@@ -191,8 +191,6 @@ impl KdeBackend {
         let mut map = HashMap::new();
 
         // Assign monitors to screen indices sequentially.
-        // The Plasma desktop screen indices (0, 1, 2, ...) correspond to the
-        // order monitors are detected, which matches our sorted monitor list.
         for (i, monitor) in monitors.iter().enumerate() {
             map.insert(monitor.device_name.clone(), i as i32);
         }
