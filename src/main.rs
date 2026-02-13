@@ -3,10 +3,11 @@ use std::rc::Rc;
 use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::{ApplicationWindow, Application, Button, Box, Picture, FileChooserDialog};
-use gtk4::{DropDown, Label, CssProvider};
-use gtk::gdk::Display;
+use gtk4::DropDown;
+use crate::alert_box::{AlertBox, AlertLevel};
 use crate::wallpaper_manager::WallpaperManager;
 
+mod alert_box;
 mod backend;
 mod wallpaper_manager;
 //mod wallpaper_source;
@@ -160,31 +161,22 @@ fn build_ui(app: &gtk::Application) {
     let initial_index = profile_names.iter().position(|n| n == "default").unwrap_or(0);
     profile_selector.set_selected(initial_index as u32);
 
-    // Warning label for profile/alias mismatches
-    let warning_label = Label::new(None);
-    warning_label.set_visible(false);
-    warning_label.add_css_class("warning-label");
-    let css_provider = CssProvider::new();
-    css_provider.load_from_data("label.warning-label { color: #b5890a; font-weight: bold; }");
-    gtk::style_context_add_provider_for_display(
-        &Display::default().expect("Could not get default display"),
-        &css_provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
+    AlertBox::load_css();
+    let warning_alert = AlertBox::new(AlertLevel::Warning);
 
     profile_selector.connect_selected_notify({
         let dropdown = profile_selector.clone();
         let wallpapers_cloned = wallpapers.clone();
         let manager_clone = manager.clone();
-        let warning_label_clone = warning_label.clone();
+        let warning_clone = warning_alert.clone();
         move |_| {
             update_wallpaper_images_from_profile(&dropdown, &wallpapers_cloned.borrow(), &manager_clone);
-            update_warning_label(&dropdown, &warning_label_clone, &manager_clone);
+            update_warning_alert(&dropdown, &warning_clone, &manager_clone);
         }
     });
 
     update_wallpaper_images_from_profile(&profile_selector, &wallpapers.borrow(), &manager);
-    update_warning_label(&profile_selector, &warning_label, &manager);
+    update_warning_alert(&profile_selector, &warning_alert, &manager);
 
     let apply_button = Button::with_label("Apply Selected profile");
     apply_button.connect_clicked({
@@ -257,7 +249,7 @@ fn build_ui(app: &gtk::Application) {
     selector_and_new_profile.append(&new_button);
 
     v_box.append(&selector_and_new_profile);
-    v_box.append(&warning_label);
+    v_box.append(&warning_alert.container);
 
     v_box.append(&grid);
     v_box.append(&apply_button);
@@ -266,7 +258,7 @@ fn build_ui(app: &gtk::Application) {
     window.present();
 }
 
-fn update_warning_label(dropdown: &DropDown, warning_label: &Label, manager: &Rc<RefCell<WallpaperManager>>) {
+fn update_warning_alert(dropdown: &DropDown, alert: &AlertBox, manager: &Rc<RefCell<WallpaperManager>>) {
     if let Some(selected_item) = dropdown.selected_item() {
         if let Ok(string_object) = selected_item.downcast::<gtk::StringObject>() {
             let selected_text = string_object.string();
@@ -301,13 +293,12 @@ fn update_warning_label(dropdown: &DropDown, warning_label: &Label, manager: &Rc
             }
 
             if !parts.is_empty() {
-                warning_label.set_text(&parts.join("\n"));
-                warning_label.set_visible(true);
+                alert.show(&parts.join("\n"));
                 return;
             }
         }
     }
-    warning_label.set_visible(false);
+    alert.hide();
 }
 
 fn update_wallpaper_images_from_profile(dropdown: &DropDown,
