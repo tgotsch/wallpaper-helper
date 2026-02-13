@@ -151,9 +151,14 @@ fn build_ui(app: &gtk::Application) {
         grid.attach(&wallpaper_data.button, i as i32, 1, 1, 1);
     }
 
-    let foo : Vec<String> = manager.borrow().profiles.keys().cloned().collect();
-    let foo_strings: Vec<&str> = foo.iter().map(|s| s.as_str()).collect();
-    let profile_selector = gtk::DropDown::from_strings(foo_strings.as_slice());
+    let mut profile_names: Vec<String> = manager.borrow().profiles.keys().cloned().collect();
+    profile_names.sort();
+    let profile_name_strs: Vec<&str> = profile_names.iter().map(|s| s.as_str()).collect();
+    let profile_selector = gtk::DropDown::from_strings(profile_name_strs.as_slice());
+
+    // Select "default" profile if it exists, otherwise first
+    let initial_index = profile_names.iter().position(|n| n == "default").unwrap_or(0);
+    profile_selector.set_selected(initial_index as u32);
 
     // Warning label for profile/alias mismatches
     let warning_label = Label::new(None);
