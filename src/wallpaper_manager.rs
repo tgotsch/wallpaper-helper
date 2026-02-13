@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -96,6 +96,17 @@ struct LegacyConfig {
     schedule: Vec<ScheduleEntry>,
 }
 
+pub struct ProfileMismatchInfo {
+    pub extra_aliases: Vec<String>,
+    pub missing_aliases: Vec<String>,
+}
+
+impl ProfileMismatchInfo {
+    pub fn has_warnings(&self) -> bool {
+        !self.extra_aliases.is_empty() || !self.missing_aliases.is_empty()
+    }
+}
+
 pub struct WallpaperManager {
     pub monitors: Vec<MonitorInfo>,
     pub aliases: Vec<String>,
@@ -186,6 +197,27 @@ impl WallpaperManager {
 
             (alias.clone(), monitor_info)
         }).collect()
+    }
+
+    pub fn check_profile_mismatch(&self, profile_name: &str) -> Option<ProfileMismatchInfo> {
+        let profile = self.profiles.get(profile_name)?;
+        let system_aliases: HashSet<&String> = self.aliases.iter().collect();
+        let profile_aliases: HashSet<&String> = profile.monitor_wallpapers.keys().collect();
+
+        let extra: Vec<String> = profile_aliases.difference(&system_aliases)
+            .map(|s| (*s).clone())
+            .collect();
+        let missing: Vec<String> = system_aliases.difference(&profile_aliases)
+            .map(|s| (*s).clone())
+            .collect();
+
+        let mut info = ProfileMismatchInfo {
+            extra_aliases: extra,
+            missing_aliases: missing,
+        };
+        info.extra_aliases.sort();
+        info.missing_aliases.sort();
+        Some(info)
     }
 
     fn refresh_monitors(&mut self) {

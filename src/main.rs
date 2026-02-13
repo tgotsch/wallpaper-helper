@@ -3,7 +3,8 @@ use std::rc::Rc;
 use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::{ApplicationWindow, Application, Button, Box, Picture, FileChooserDialog};
-use gtk4::DropDown;
+use gtk4::{DropDown, Label, CssProvider};
+use gtk::gdk::Display;
 use crate::wallpaper_manager::WallpaperManager;
 
 mod backend;
@@ -154,16 +155,31 @@ fn build_ui(app: &gtk::Application) {
     let foo_strings: Vec<&str> = foo.iter().map(|s| s.as_str()).collect();
     let profile_selector = gtk::DropDown::from_strings(foo_strings.as_slice());
 
+    // Warning label for profile/alias mismatches
+    let warning_label = Label::new(None);
+    warning_label.set_visible(false);
+    warning_label.add_css_class("warning-label");
+    let css_provider = CssProvider::new();
+    css_provider.load_from_data("label.warning-label { color: #b5890a; font-weight: bold; }");
+    gtk::style_context_add_provider_for_display(
+        &Display::default().expect("Could not get default display"),
+        &css_provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+
     profile_selector.connect_selected_notify({
         let dropdown = profile_selector.clone();
         let wallpapers_cloned = wallpapers.clone();
         let manager_clone = manager.clone();
+        let warning_label_clone = warning_label.clone();
         move |_| {
             update_wallpaper_images_from_profile(&dropdown, &wallpapers_cloned.borrow(), &manager_clone);
+            update_warning_label(&dropdown, &warning_label_clone, &manager_clone);
         }
     });
 
     update_wallpaper_images_from_profile(&profile_selector, &wallpapers.borrow(), &manager);
+    update_warning_label(&profile_selector, &warning_label, &manager);
 
     let apply_button = Button::with_label("Apply Selected profile");
     apply_button.connect_clicked({
@@ -236,12 +252,57 @@ fn build_ui(app: &gtk::Application) {
     selector_and_new_profile.append(&new_button);
 
     v_box.append(&selector_and_new_profile);
+    v_box.append(&warning_label);
 
     v_box.append(&grid);
     v_box.append(&apply_button);
     window.set_child(Some(&v_box));
 
     window.present();
+}
+
+fn update_warning_label(dropdown: &DropDown, warning_label: &Label, manager: &Rc<RefCell<WallpaperManager>>) {
+    if let Some(selected_item) = dropdown.selected_item() {
+        if let Ok(string_object) = selected_item.downcast::<gtk::StringObject>() {
+            let selected_text = string_object.string();
+            let mgr = manager.borrow();
+            let mut parts = Vec::new();
+
+            if let Some(info) = mgr.check_profile_mismatch(selected_text.as_str()) {
+                if !info.extra_aliases.is_empty() {
+                    parts.push(format!("Profile has unknown aliases: {}", info.extra_aliases.join(", ")));
+                }
+                if !info.missing_aliases.is_empty() {
+                    parts.push(format!("No wallpaper set for: {}", info.missing_aliases.join(", ")));
+                }
+            }
+
+            // Check for missing image files
+            if let Some(profile) = mgr.profiles.get(selected_text.as_str()) {
+                let mut missing_files = Vec::new();
+                for (alias, relative_path) in &profile.monitor_wallpapers {
+                    if relative_path.is_empty() {
+                        continue;
+                    }
+                    let abs = mgr.resolve_wallpaper_path(relative_path);
+                    if !std::path::Path::new(&abs).exists() {
+                        missing_files.push(format!("{} ({})", alias, relative_path));
+                    }
+                }
+                missing_files.sort();
+                if !missing_files.is_empty() {
+                    parts.push(format!("Image not found for: {}", missing_files.join(", ")));
+                }
+            }
+
+            if !parts.is_empty() {
+                warning_label.set_text(&parts.join("\n"));
+                warning_label.set_visible(true);
+                return;
+            }
+        }
+    }
+    warning_label.set_visible(false);
 }
 
 fn update_wallpaper_images_from_profile(dropdown: &DropDown,
@@ -251,13 +312,19 @@ fn update_wallpaper_images_from_profile(dropdown: &DropDown,
         if let Ok(string_object) = selected_item.downcast::<gtk::StringObject>() {
             let selected_text = string_object.string();
             let mgr = manager.borrow();
-            if let Some(selected_profile) = mgr.profiles.get(selected_text.as_str()) {
-                for (alias, relative_path) in &selected_profile.monitor_wallpapers {
-                    let found_res = wallpapers.iter().find(|w| w.monitor_name == *alias);
+            let profile = mgr.profiles.get(selected_text.as_str());
 
-                    if let Some(found) = found_res {
-                        let absolute_path = mgr.resolve_wallpaper_path(relative_path);
-                        found.image.set_filename(Some(absolute_path.as_str()));
+            for wallpaper in wallpapers.iter() {
+                let path = profile
+                    .and_then(|p| p.monitor_wallpapers.get(&wallpaper.monitor_name))
+                    .map(|rel| mgr.resolve_wallpaper_path(rel));
+
+                match path {
+                    Some(abs) if !abs.is_empty() && std::path::Path::new(&abs).exists() => {
+                        wallpaper.image.set_filename(Some(abs.as_str()));
+                    }
+                    _ => {
+                        wallpaper.image.set_filename(None::<&str>);
                     }
                 }
             }
