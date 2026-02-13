@@ -116,10 +116,10 @@ impl WallpaperData {
     }
 }
 
-fn build_ui(app: &gtk::Application) {
+fn build_ui(app: &gtk::Application, config_path: &str) {
     let manager = Rc::new(RefCell::new(WallpaperManager::new()));
     let wallpapers: Rc<RefCell<Vec<WallpaperData>>> = Rc::new(RefCell::new(Vec::new()));
-    manager.borrow_mut().load_config("config.json");
+    manager.borrow_mut().load_config(config_path);
 
     let window = ApplicationWindow::builder()
         .application(app)
@@ -201,6 +201,7 @@ fn build_ui(app: &gtk::Application) {
 
     let new_button = Button::with_label("New profile");
     let parent_clone = window.clone();
+    let config_path: Rc<str> = Rc::from(config_path);
     new_button.connect_clicked(move |_| {
         // Create the dialog, with OK and Cancel buttons
         let dialog = gtk::Dialog::builder()
@@ -225,6 +226,7 @@ fn build_ui(app: &gtk::Application) {
 
         let m_clone = manager.clone();
         let wallpapers_cloned = wallpapers.clone();
+        let config_path = config_path.clone();
         // Handle responses
         dialog.connect_response(move |d, resp| {
             if resp == gtk::ResponseType::Ok {
@@ -237,7 +239,7 @@ fn build_ui(app: &gtk::Application) {
                     {
                         m_clone.borrow_mut().set_wallpaper_in_profile(name.as_str(), wallpaper.monitor_name.as_str(), wallpaper.filename.as_str());
                     }
-                    m_clone.borrow_mut().save_config("config.json");
+                    m_clone.borrow_mut().save_config(&config_path);
                 }
             }
             d.close();
@@ -330,11 +332,15 @@ fn update_wallpaper_images_from_profile(dropdown: &DropDown,
 
 // Example usage and CLI interface
 fn main() {
+    let config_path = std::env::args().nth(1).unwrap_or_else(|| "config.json".to_string());
+
     let app = Application::builder()
         .application_id("org.example.HelloWorld")
         .build();
 
-    app.connect_activate(build_ui);
+    app.connect_activate(move |app| {
+        build_ui(app, &config_path);
+    });
 
     app.run(); //blocks
 
