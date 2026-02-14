@@ -27,6 +27,11 @@ pub struct ScheduleEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileCollection {
+    pub profiles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MonitorMapping {
     Simple(String),
@@ -87,6 +92,8 @@ impl Default for PlatformConfigs {
 struct Config {
     platform_config: PlatformConfigs,
     profiles: HashMap<String, WallpaperProfile>,
+    #[serde(default)]
+    collections: HashMap<String, ProfileCollection>,
     schedule: Vec<ScheduleEntry>,
 }
 
@@ -112,6 +119,8 @@ pub struct WallpaperManager {
     pub aliases: Vec<String>,
     pub platform_configs: PlatformConfigs,
     pub profiles: HashMap<String, WallpaperProfile>,
+    pub collections: HashMap<String, ProfileCollection>,
+    pub collection_cycle_indices: HashMap<String, usize>,
     pub schedule: Vec<ScheduleEntry>,
     pub scheduler_running: Arc<AtomicBool>,
     backend: Box<dyn WallpaperBackend>,
@@ -140,6 +149,8 @@ impl WallpaperManager {
             aliases: Vec::new(),
             platform_configs: PlatformConfigs::default(),
             profiles: HashMap::new(),
+            collections: HashMap::new(),
+            collection_cycle_indices: HashMap::new(),
             schedule: Vec::new(),
             scheduler_running: Arc::new(AtomicBool::new(false)),
             backend,
@@ -472,10 +483,110 @@ impl WallpaperManager {
         self.profiles.values().filter(|profile| profile.name == profile_name).map(|profile| profile.tags.clone()).flatten().collect()
     }
 
+    // --- Collection methods ---
+
+    pub fn create_collection(&mut self, name: &str) -> bool {
+        if self.collections.contains_key(name) {
+            println!("Collection '{}' already exists!", name);
+            return false;
+        }
+        self.collections.insert(name.to_string(), ProfileCollection {
+            profiles: Vec::new(),
+        });
+        println!("Collection '{}' created.", name);
+        true
+    }
+
+    pub fn delete_collection(&mut self, name: &str) -> bool {
+        if self.collections.remove(name).is_some() {
+            self.collection_cycle_indices.remove(name);
+            println!("Collection '{}' deleted.", name);
+            true
+        } else {
+            println!("Collection '{}' not found!", name);
+            false
+        }
+    }
+
+    pub fn add_profile_to_collection(&mut self, collection: &str, profile: &str) -> bool {
+        if !self.profiles.contains_key(profile) {
+            println!("Profile '{}' not found!", profile);
+            return false;
+        }
+        if let Some(col) = self.collections.get_mut(collection) {
+            if col.profiles.contains(&profile.to_string()) {
+                println!("Profile '{}' already in collection '{}'", profile, collection);
+                return false;
+            }
+            col.profiles.push(profile.to_string());
+            true
+        } else {
+            println!("Collection '{}' not found!", collection);
+            false
+        }
+    }
+
+    pub fn remove_profile_from_collection(&mut self, collection: &str, profile: &str) -> bool {
+        if let Some(col) = self.collections.get_mut(collection) {
+            let before = col.profiles.len();
+            col.profiles.retain(|p| p != profile);
+            col.profiles.len() < before
+        } else {
+            false
+        }
+    }
+
+    pub fn get_valid_collection_profiles(&self, collection: &str) -> Vec<String> {
+        match self.collections.get(collection) {
+            Some(col) => col.profiles.iter()
+                .filter(|p| self.profiles.contains_key(p.as_str()))
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    pub fn apply_random_from_collection(&mut self, collection: &str) -> Option<String> {
+        use rand::seq::SliceRandom;
+        let valid = self.get_valid_collection_profiles(collection);
+        if valid.is_empty() {
+            return None;
+        }
+        let mut rng = rand::thread_rng();
+        let chosen = valid.choose(&mut rng)?.clone();
+        self.apply_profile(&chosen);
+        Some(chosen)
+    }
+
+    pub fn apply_next_in_collection(&mut self, collection: &str) -> Option<String> {
+        let valid = self.get_valid_collection_profiles(collection);
+        if valid.is_empty() {
+            return None;
+        }
+        let idx = self.collection_cycle_indices.entry(collection.to_string()).or_insert(0);
+        *idx = (*idx + 1) % valid.len();
+        let chosen = valid[*idx].clone();
+        self.apply_profile(&chosen);
+        Some(chosen)
+    }
+
+    pub fn apply_prev_in_collection(&mut self, collection: &str) -> Option<String> {
+        let valid = self.get_valid_collection_profiles(collection);
+        if valid.is_empty() {
+            return None;
+        }
+        let idx = self.collection_cycle_indices.entry(collection.to_string()).or_insert(0);
+        *idx = if *idx == 0 { valid.len() - 1 } else { *idx - 1 };
+        let chosen = valid[*idx].clone();
+        self.apply_profile(&chosen);
+        Some(chosen)
+    }
+
     pub fn save_config(&self, filename: &str) -> bool {
         let config = Config {
             platform_config: self.platform_configs.clone(),
             profiles: self.profiles.clone(),
+            collections: self.collections.clone(),
             schedule: self.schedule.clone(),
         };
 
@@ -512,6 +623,7 @@ impl WallpaperManager {
         if let Ok(config) = serde_json::from_str::<Config>(&contents) {
             self.platform_configs = config.platform_config;
             self.profiles = config.profiles;
+            self.collections = config.collections;
             self.schedule = config.schedule;
 
             for (name, profile) in &mut self.profiles {
@@ -544,6 +656,7 @@ impl WallpaperManager {
             Ok(legacy) => {
                 println!("Detected legacy config format. Please add platform_config section.");
                 self.profiles = legacy.profiles;
+                self.collections = HashMap::new();
                 self.schedule = legacy.schedule;
 
                 for (name, profile) in &mut self.profiles {

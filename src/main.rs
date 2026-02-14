@@ -9,6 +9,7 @@ use crate::wallpaper_manager::WallpaperManager;
 
 mod alert_box;
 mod backend;
+mod collections_window;
 mod wallpaper_manager;
 //mod wallpaper_source;
 
@@ -202,6 +203,9 @@ fn build_ui(app: &gtk::Application) {
     let new_button = Button::with_label("New profile");
     let parent_clone = window.clone();
     let dropdown_rc = Rc::new(profile_selector.clone());
+    // Clone before move closure consumes them
+    let manager_for_collections = manager.clone();
+    let wallpapers_for_collections = wallpapers.clone();
     new_button.connect_clicked(move |_| {
         // Create the dialog, with OK and Cancel buttons
         let dialog = gtk::Dialog::builder()
@@ -269,9 +273,50 @@ fn build_ui(app: &gtk::Application) {
         });
     });
 
+    let collections_button = Button::with_label("Collections...");
+    {
+        let app_clone = app.clone();
+        let window_clone = window.clone();
+        let manager_clone = manager_for_collections.clone();
+        let dropdown_clone = profile_selector.clone();
+        let wallpapers_clone = wallpapers_for_collections.clone();
+        let warning_clone = warning_alert.clone();
+        collections_button.connect_clicked(move |_| {
+            let dropdown_inner = dropdown_clone.clone();
+            let wallpapers_inner = wallpapers_clone.clone();
+            let manager_inner = manager_clone.clone();
+            let warning_inner = warning_clone.clone();
+            collections_window::open_collections_window(
+                &app_clone,
+                &window_clone,
+                manager_clone.clone(),
+                move |profile_name| {
+                    // Find the profile in the dropdown's model and select it
+                    if let Some(model) = dropdown_inner.model() {
+                        if let Ok(string_list) = model.downcast::<gtk::StringList>() {
+                            let n = string_list.n_items();
+                            for i in 0..n {
+                                if let Some(s) = string_list.string(i) {
+                                    if s == profile_name {
+                                        dropdown_inner.set_selected(i);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Update images and warnings for the applied profile
+                    update_wallpaper_images_from_profile(&dropdown_inner, &wallpapers_inner.borrow(), &manager_inner);
+                    update_warning_alert(&dropdown_inner, &warning_inner, &manager_inner);
+                },
+            );
+        });
+    }
+
     let selector_and_new_profile = Box::new(gtk::Orientation::Horizontal, 5);
     selector_and_new_profile.append(&profile_selector);
     selector_and_new_profile.append(&new_button);
+    selector_and_new_profile.append(&collections_button);
 
     v_box.append(&selector_and_new_profile);
     v_box.append(&warning_alert.container);
