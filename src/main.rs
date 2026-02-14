@@ -201,6 +201,7 @@ fn build_ui(app: &gtk::Application) {
 
     let new_button = Button::with_label("New profile");
     let parent_clone = window.clone();
+    let dropdown_rc = Rc::new(profile_selector.clone());
     new_button.connect_clicked(move |_| {
         // Create the dialog, with OK and Cancel buttons
         let dialog = gtk::Dialog::builder()
@@ -225,6 +226,7 @@ fn build_ui(app: &gtk::Application) {
 
         let m_clone = manager.clone();
         let wallpapers_cloned = wallpapers.clone();
+        let dropdown_inner = dropdown_rc.clone();
         // Handle responses
         dialog.connect_response(move |d, resp| {
             if resp == gtk::ResponseType::Ok {
@@ -238,6 +240,29 @@ fn build_ui(app: &gtk::Application) {
                         m_clone.borrow_mut().set_wallpaper_in_profile(name.as_str(), wallpaper.monitor_name.as_str(), wallpaper.filename.as_str());
                     }
                     m_clone.borrow_mut().save_config("config.json");
+
+                    // Add new profile to dropdown in sorted position
+                    if let Some(model) = dropdown_inner.model() {
+                        if let Ok(string_list) = model.downcast::<gtk::StringList>() {
+                            let n = string_list.n_items();
+                            let mut insert_pos = n;
+                            for i in 0..n {
+                                if let Some(existing) = string_list.string(i) {
+                                    if name.as_str() <= existing.as_str() {
+                                        insert_pos = i;
+                                        break;
+                                    }
+                                }
+                            }
+                            // Only insert if not a duplicate
+                            let is_duplicate = insert_pos < n
+                                && string_list.string(insert_pos).map_or(false, |s| s == name);
+                            if !is_duplicate {
+                                string_list.splice(insert_pos, 0, &[name.as_str()]);
+                            }
+                            dropdown_inner.set_selected(insert_pos);
+                        }
+                    }
                 }
             }
             d.close();
