@@ -2,6 +2,7 @@
 
 use super::{MonitorInfo, WallpaperBackend};
 
+use log::{info, error};
 use winapi::um::winuser::MONITORINFOF_PRIMARY;
 use windows::core::{BOOL, HRESULT, HSTRING, Result, PWSTR};
 use windows::Win32::UI::Shell::{IDesktopWallpaper, DesktopWallpaper};
@@ -141,7 +142,7 @@ impl WindowsBackend {
                                 || device_name.contains(&monitor_id_str);
 
                             if is_match {
-                                println!("Trying to set wallpaper for monitor: {}", monitor_id_str);
+                                info!("Trying to set wallpaper for monitor: {}", monitor_id_str);
                                 let hr = wallpaper.SetWallpaper(
                                     str_ptr,
                                     &wallpaper_path_wide,
@@ -149,13 +150,13 @@ impl WindowsBackend {
 
                                 match hr {
                                     Ok(_) => {
-                                        println!("Successfully set wallpaper using monitor ID: {}", monitor_id_str);
+                                        info!("Successfully set wallpaper using monitor ID: {}", monitor_id_str);
                                         success = true;
                                         CoTaskMemFree(Some(str_ptr.0 as _));
                                         break;
                                     }
                                     Err(e) => {
-                                        println!("Failed to set wallpaper, HRESULT: 0x{:X}", e.code().0);
+                                        error!("Failed to set wallpaper, HRESULT: 0x{:X}", e.code().0);
                                     }
                                 }
                             }
@@ -167,14 +168,14 @@ impl WindowsBackend {
 
                 if !success {
                     let device_name_wide = HSTRING::from(device_name);
-                    println!("Trying direct device name: {}", device_name);
+                    info!("Trying direct device name: {}", device_name);
                     let hr = wallpaper.SetWallpaper(
                         &device_name_wide,
                         &wallpaper_path_wide,
                     );
 
                     if hr.is_ok() {
-                        println!("Successfully set wallpaper using direct device name");
+                        info!("Successfully set wallpaper using direct device name");
                         success = true;
                     }
                 }
@@ -263,7 +264,7 @@ impl WallpaperBackend for WindowsBackend {
             return true;
         }
 
-        println!("IDesktopWallpaper failed for {}, fallback not available", monitor_id);
+        error!("IDesktopWallpaper failed for {}, fallback not available", monitor_id);
         false
     }
 }

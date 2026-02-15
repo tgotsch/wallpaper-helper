@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use chrono::{Local, Timelike};
+use log::{info, warn, error};
 use serde::{Serialize, Deserialize};
 
 use crate::backend::{MonitorInfo, WallpaperBackend, create_backend};
@@ -127,10 +128,10 @@ impl WallpaperManager {
         let mut backend = create_backend();
         let monitors = backend.refresh_monitors();
 
-        println!("\n=== Monitor Information ===");
-        println!("Found {} monitors:", monitors.len());
+        info!("=== Monitor Information ===");
+        info!("Found {} monitors:", monitors.len());
         for (i, monitor) in monitors.iter().enumerate() {
-            println!("  {}. {}{} - {}x{}",
+            info!("  {}. {}{} - {}x{}",
                      i + 1,
                      monitor.device_name,
                      if monitor.is_primary { " (Primary)" } else { "" },
@@ -138,7 +139,7 @@ impl WallpaperManager {
                      monitor.height,
             );
         }
-        println!("===========================\n");
+        info!("===========================");
 
         Self {
             monitors,
@@ -230,10 +231,10 @@ impl WallpaperManager {
     fn refresh_monitors(&mut self) {
         self.monitors = self.backend.refresh_monitors();
 
-        println!("\n=== Monitor Information ===");
-        println!("Found {} monitors:", self.monitors.len());
+        info!("=== Monitor Information ===");
+        info!("Found {} monitors:", self.monitors.len());
         for (i, monitor) in self.monitors.iter().enumerate() {
-            println!("  {}. {}{} - {}x{}",
+            info!("  {}. {}{} - {}x{}",
                      i + 1,
                      monitor.device_name,
                      if monitor.is_primary { " (Primary)" } else { "" },
@@ -241,14 +242,14 @@ impl WallpaperManager {
                      monitor.height,
             );
         }
-        println!("===========================\n");
+        info!("===========================");
     }
 
     pub fn get_current_wallpaper_by_alias(&self, alias: &str) -> String {
         match self.resolve_alias_to_device(alias) {
             Some(device) => self.backend.get_current_wallpaper(device),
             None => {
-                println!("No device mapping found for alias '{}'", alias);
+                warn!("No device mapping found for alias '{}'", alias);
                 String::new()
             }
         }
@@ -257,33 +258,32 @@ impl WallpaperManager {
     pub fn print_monitors(&mut self) {
         self.refresh_monitors();
 
-        println!("Available monitors for wallpaper setting:");
-        println!("==========================================");
+        info!("Available monitors for wallpaper setting:");
+        info!("==========================================");
 
         for (i, monitor) in self.monitors.iter().enumerate() {
-            println!("{}. {}{} - {}x{}",
+            info!("{}. {}{} - {}x{}",
                      i + 1,
                      monitor.device_name,
                      if monitor.is_primary { " (Primary)" } else { "" },
                      monitor.width,
                      monitor.height,
             );
-            println!("   Use device name: {}", monitor.device_name);
+            info!("   Use device name: {}", monitor.device_name);
 
             let current_wallpaper = self.backend.get_current_wallpaper(&monitor.device_name);
             if !current_wallpaper.is_empty() {
-                println!("   Current wallpaper: {}", current_wallpaper);
+                info!("   Current wallpaper: {}", current_wallpaper);
             }
-            println!();
         }
 
-        println!("==========================================");
-        println!("Tip: Copy the 'Use device name' exactly when setting wallpapers.\n");
+        info!("==========================================");
+        info!("Tip: Copy the 'Use device name' exactly when setting wallpapers.");
     }
 
     pub fn create_profile(&mut self, profile_name: &str) -> bool {
         if self.profiles.contains_key(profile_name) {
-            println!("Profile '{}' already exists!", profile_name);
+            warn!("Profile '{}' already exists!", profile_name);
             return false;
         }
 
@@ -293,19 +293,19 @@ impl WallpaperManager {
             tags: Vec::new(),
         });
 
-        println!("Profile '{}' created.", profile_name);
+        info!("Profile '{}' created.", profile_name);
         true
     }
 
     pub fn set_wallpaper_in_profile(&mut self, profile_name: &str, alias: &str, wallpaper_path: &str) -> bool {
         if !self.profiles.contains_key(profile_name) {
-            println!("Profile '{}' not found!", profile_name);
+            warn!("Profile '{}' not found!", profile_name);
             return false;
         }
 
         // Verify file exists (absolute path from file chooser)
         if !Path::new(wallpaper_path).exists() {
-            println!("Wallpaper file not found: {}", wallpaper_path);
+            warn!("Wallpaper file not found: {}", wallpaper_path);
             return false;
         }
 
@@ -313,18 +313,18 @@ impl WallpaperManager {
         if let Some(extension) = Path::new(wallpaper_path).extension() {
             let ext = extension.to_string_lossy().to_lowercase();
             if !matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "bmp" | "gif" | "tiff") {
-                println!("Unsupported image format: {}", ext);
-                println!("Supported formats: jpg, jpeg, png, bmp, gif, tiff");
+                warn!("Unsupported image format: {}", ext);
+                warn!("Supported formats: jpg, jpeg, png, bmp, gif, tiff");
                 return false;
             }
         }
 
         // Validate alias exists
         if !self.aliases.contains(&alias.to_string()) {
-            println!("Monitor alias '{}' not found!", alias);
-            println!("Available aliases:");
+            warn!("Monitor alias '{}' not found!", alias);
+            warn!("Available aliases:");
             for a in &self.aliases {
-                println!("  {}", a);
+                warn!("  {}", a);
             }
             return false;
         }
@@ -334,7 +334,7 @@ impl WallpaperManager {
 
         if let Some(profile) = self.profiles.get_mut(profile_name) {
             profile.monitor_wallpapers.insert(alias.to_string(), relative_path);
-            println!("Added wallpaper to profile '{}' for monitor {}", profile_name, alias);
+            info!("Added wallpaper to profile '{}' for monitor {}", profile_name, alias);
             true
         } else {
             false
@@ -344,13 +344,13 @@ impl WallpaperManager {
     pub fn apply_profile(&self, profile_name: &str) -> bool {
         if let Some(profile) = self.profiles.get(profile_name) {
             let mut success = true;
-            println!("Applying profile '{}'...", profile_name);
+            info!("Applying profile '{}'...", profile_name);
 
             for (alias, relative_path) in &profile.monitor_wallpapers {
                 let device_name = match self.resolve_alias_to_device(alias) {
                     Some(dev) => dev.to_string(),
                     None => {
-                        println!("No device mapping found for alias '{}' on this platform", alias);
+                        warn!("No device mapping found for alias '{}' on this platform", alias);
                         success = false;
                         continue;
                     }
@@ -359,30 +359,30 @@ impl WallpaperManager {
                 let absolute_path = self.resolve_wallpaper_path(relative_path);
 
                 if !self.backend.set_wallpaper(&device_name, &absolute_path) {
-                    println!("Failed to set wallpaper for {} ({})", alias, device_name);
+                    error!("Failed to set wallpaper for {} ({})", alias, device_name);
                     success = false;
                 } else {
-                    println!("Set wallpaper for {} ({})", alias, device_name);
+                    info!("Set wallpaper for {} ({})", alias, device_name);
                 }
             }
 
             success
         } else {
-            println!("Profile '{}' not found!", profile_name);
+            warn!("Profile '{}' not found!", profile_name);
             false
         }
     }
 
     pub fn list_profiles(&self) -> Vec<String> {
         if self.profiles.is_empty() {
-            println!("No profiles created.");
+            info!("No profiles created.");
             return Vec::new();
         }
 
-        println!("Available profiles:");
+        info!("Available profiles:");
         let mut profile_names = Vec::new();
         for (name, profile) in &self.profiles {
-            println!("- {} ({} monitors)", name, profile.monitor_wallpapers.len());
+            info!("- {} ({} monitors)", name, profile.monitor_wallpapers.len());
             profile_names.push(name.clone());
         }
 
@@ -391,12 +391,12 @@ impl WallpaperManager {
 
     pub fn add_schedule(&mut self, profile_name: &str, hour: u32, minute: u32) -> bool {
         if !self.profiles.contains_key(profile_name) {
-            println!("Profile '{}' not found!", profile_name);
+            warn!("Profile '{}' not found!", profile_name);
             return false;
         }
 
         if hour > 23 || minute > 59 {
-            println!("Invalid time format. Use 24-hour format (0-23 for hours, 0-59 for minutes).");
+            warn!("Invalid time format. Use 24-hour format (0-23 for hours, 0-59 for minutes).");
             return false;
         }
 
@@ -407,19 +407,19 @@ impl WallpaperManager {
             enabled: true,
         });
 
-        println!("Scheduled profile '{}' at {:02}:{:02}", profile_name, hour, minute);
+        info!("Scheduled profile '{}' at {:02}:{:02}", profile_name, hour, minute);
         true
     }
 
     pub fn list_schedule(&self) {
         if self.schedule.is_empty() {
-            println!("No scheduled profiles.");
+            info!("No scheduled profiles.");
             return;
         }
 
-        println!("Scheduled profiles:");
+        info!("Scheduled profiles:");
         for (i, entry) in self.schedule.iter().enumerate() {
-            println!("{}. {} at {:02}:{:02}{}",
+            info!("{}. {} at {:02}:{:02}{}",
                      i + 1,
                      entry.profile_name,
                      entry.hour,
@@ -471,41 +471,41 @@ impl WallpaperManager {
 
     pub fn create_collection(&mut self, name: &str) -> bool {
         if self.collections.contains_key(name) {
-            println!("Collection '{}' already exists!", name);
+            warn!("Collection '{}' already exists!", name);
             return false;
         }
         self.collections.insert(name.to_string(), ProfileCollection {
             profiles: Vec::new(),
         });
-        println!("Collection '{}' created.", name);
+        info!("Collection '{}' created.", name);
         true
     }
 
     pub fn delete_collection(&mut self, name: &str) -> bool {
         if self.collections.remove(name).is_some() {
             self.collection_cycle_indices.remove(name);
-            println!("Collection '{}' deleted.", name);
+            info!("Collection '{}' deleted.", name);
             true
         } else {
-            println!("Collection '{}' not found!", name);
+            warn!("Collection '{}' not found!", name);
             false
         }
     }
 
     pub fn add_profile_to_collection(&mut self, collection: &str, profile: &str) -> bool {
         if !self.profiles.contains_key(profile) {
-            println!("Profile '{}' not found!", profile);
+            warn!("Profile '{}' not found!", profile);
             return false;
         }
         if let Some(col) = self.collections.get_mut(collection) {
             if col.profiles.contains(&profile.to_string()) {
-                println!("Profile '{}' already in collection '{}'", profile, collection);
+                warn!("Profile '{}' already in collection '{}'", profile, collection);
                 return false;
             }
             col.profiles.push(profile.to_string());
             true
         } else {
-            println!("Collection '{}' not found!", collection);
+            warn!("Collection '{}' not found!", collection);
             false
         }
     }
@@ -578,17 +578,17 @@ impl WallpaperManager {
             Ok(json) => {
                 match fs::write(filename, json) {
                     Ok(_) => {
-                        println!("Configuration saved to {}", filename);
+                        info!("Configuration saved to {}", filename);
                         true
                     }
                     Err(e) => {
-                        println!("Failed to save config to {}: {}", filename, e);
+                        error!("Failed to save config to {}: {}", filename, e);
                         false
                     }
                 }
             }
             Err(e) => {
-                println!("Failed to serialize config: {}", e);
+                error!("Failed to serialize config: {}", e);
                 false
             }
         }
@@ -598,7 +598,7 @@ impl WallpaperManager {
         let contents = match fs::read_to_string(filename) {
             Ok(contents) => contents,
             Err(_) => {
-                println!("Config file not found: {}", filename);
+                warn!("Config file not found: {}", filename);
                 return false;
             }
         };
@@ -626,19 +626,19 @@ impl WallpaperManager {
                 if let Some(mapping) = self.current_platform_config().monitor_map.get(alias) {
                     let device = mapping.device();
                     if !self.monitors.iter().any(|m| m.device_name == device) {
-                        println!("Warning: alias '{}' maps to device '{}' which was not detected", alias, device);
+                        warn!("Alias '{}' maps to device '{}' which was not detected", alias, device);
                     }
                 }
             }
 
-            println!("Configuration loaded from {}", filename);
+            info!("Configuration loaded from {}", filename);
             return true;
         }
 
         // Fall back to legacy format
         match serde_json::from_str::<LegacyConfig>(&contents) {
             Ok(legacy) => {
-                println!("Detected legacy config format. Please add platform_config section.");
+                warn!("Detected legacy config format. Please add platform_config section.");
                 self.profiles = legacy.profiles;
                 self.collections = HashMap::new();
                 self.schedule = legacy.schedule;
@@ -672,7 +672,7 @@ impl WallpaperManager {
                 true
             }
             Err(e) => {
-                println!("Failed to parse config from {}: {}", filename, e);
+                error!("Failed to parse config from {}: {}", filename, e);
                 false
             }
         }

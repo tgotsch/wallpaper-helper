@@ -2,6 +2,7 @@
 
 use super::{MonitorInfo, WallpaperBackend};
 
+use log::{info, warn, error};
 use std::collections::HashMap;
 use std::process::Command;
 
@@ -28,14 +29,14 @@ impl KdeBackend {
         let output = match Command::new("kscreen-doctor").arg("--outputs").output() {
             Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
             Ok(o) => {
-                println!(
+                warn!(
                     "kscreen-doctor failed with exit code {:?}, falling back to sysfs",
                     o.status.code()
                 );
                 return Self::parse_sysfs_outputs();
             }
             Err(e) => {
-                println!("Failed to run kscreen-doctor: {}, falling back to sysfs", e);
+                warn!("Failed to run kscreen-doctor: {}, falling back to sysfs", e);
                 return Self::parse_sysfs_outputs();
             }
         };
@@ -109,7 +110,7 @@ impl KdeBackend {
 
         // If kscreen-doctor ran but returned no monitors, try sysfs fallback
         if result.is_empty() {
-            println!("kscreen-doctor returned no monitors, falling back to sysfs");
+            warn!("kscreen-doctor returned no monitors, falling back to sysfs");
             return Self::parse_sysfs_outputs();
         }
 
@@ -128,7 +129,7 @@ impl KdeBackend {
         let entries = match fs::read_dir(drm_path) {
             Ok(e) => e,
             Err(e) => {
-                println!("Failed to read /sys/class/drm: {}", e);
+                error!("Failed to read /sys/class/drm: {}", e);
                 return monitors;
             }
         };
@@ -183,7 +184,7 @@ impl KdeBackend {
             monitors[0].is_primary = true;
         }
 
-        println!("Detected {} monitors via sysfs fallback", monitors.len());
+        info!("Detected {} monitors via sysfs fallback", monitors.len());
         monitors
     }
 
@@ -234,7 +235,7 @@ impl WallpaperBackend for KdeBackend {
                 result
             }
             Err(e) => {
-                println!("Failed to get wallpaper via qdbus: {}", e);
+                error!("Failed to get wallpaper via qdbus: {}", e);
                 String::new()
             }
         }
@@ -272,16 +273,16 @@ impl WallpaperBackend for KdeBackend {
         match output {
             Ok(o) => {
                 if o.status.success() {
-                    println!("Set wallpaper for {} (screen {})", monitor_id, screen_idx);
+                    info!("Set wallpaper for {} (screen {})", monitor_id, screen_idx);
                     true
                 } else {
                     let stderr = String::from_utf8_lossy(&o.stderr);
-                    println!("Failed to set wallpaper for {}: {}", monitor_id, stderr);
+                    error!("Failed to set wallpaper for {}: {}", monitor_id, stderr);
                     false
                 }
             }
             Err(e) => {
-                println!("Failed to run qdbus: {}", e);
+                error!("Failed to run qdbus: {}", e);
                 false
             }
         }

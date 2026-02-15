@@ -10,6 +10,7 @@ use crate::wallpaper_manager::WallpaperManager;
 mod alert_box;
 mod backend;
 mod collections_window;
+mod logging;
 mod tray;
 mod wallpaper_manager;
 //mod wallpaper_source;
@@ -367,7 +368,7 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
         let manager = manager.clone();
         move |_| {
             if let Some(DropdownEntry::Profile(ref name)) = get_selected_entry() {
-                println!("Applying profile: '{}'", name);
+                log::info!("Applying profile: '{}'", name);
                 manager.borrow_mut().apply_profile(name);
             }
         }
@@ -407,7 +408,7 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
                 if resp == gtk::ResponseType::Ok {
                     let name = entry.text().to_string();
                     if !name.trim().is_empty() {
-                        println!("Creating profile: {}", name);
+                        log::info!("Creating profile: {}", name);
                         manager.borrow_mut().create_profile(name.as_str());
                         for wallpaper in wallpapers.borrow().iter() {
                             manager.borrow_mut().set_wallpaper_in_profile(
@@ -622,7 +623,7 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
         let manager = manager.clone();
         move || {
             if let Some(name) = manager.borrow_mut().check_and_apply_schedule() {
-                println!("Scheduler applied profile: {}", name);
+                log::info!("Scheduler applied profile: {}", name);
             }
             glib::ControlFlow::Continue
         }
@@ -691,6 +692,8 @@ fn update_wallpaper_images_for_profile(profile_name: &str,
 }
 
 fn main() {
+    logging::init();
+
     let config_path = std::env::args().nth(1).unwrap_or_else(|| "config.json".to_string());
 
     let app = Application::builder()
