@@ -577,9 +577,15 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
     window.set_child(Some(&v_box));
 
     // Close-to-hide: hide window instead of quitting
-    window.connect_close_request(|w| {
-        w.set_visible(false);
-        glib::Propagation::Stop
+    window.connect_close_request({
+        let app = app.clone();
+        move |w| {
+            w.set_visible(false);
+            let notification = gtk::gio::Notification::new("Wallpaper Helper");
+            notification.set_body(Some("Still running in the system tray."));
+            app.send_notification(Some("minimized-to-tray"), &notification);
+            glib::Propagation::Stop
+        }
     });
 
     // Keep app alive when all windows are hidden
@@ -705,5 +711,5 @@ fn main() {
         }
     });
 
-    app.run();
+    app.run_with_args(&[] as &[&str]);
 }
