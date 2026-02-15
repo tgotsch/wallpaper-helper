@@ -10,6 +10,7 @@ use crate::wallpaper_manager::WallpaperManager;
 mod alert_box;
 mod backend;
 mod collections_window;
+mod tray;
 mod wallpaper_manager;
 //mod wallpaper_source;
 
@@ -133,7 +134,7 @@ impl DropdownEntry {
 
 }
 
-fn build_ui(app: &gtk::Application) {
+fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationWindow>>>) {
     let manager = Rc::new(RefCell::new(WallpaperManager::new()));
     let wallpapers: Rc<RefCell<Vec<WallpaperData>>> = Rc::new(RefCell::new(Vec::new()));
     manager.borrow_mut().load_config("config.json");
@@ -572,6 +573,52 @@ fn build_ui(app: &gtk::Application) {
     v_box.append(&collection_controls);
     window.set_child(Some(&v_box));
 
+    // Close-to-hide: hide window instead of quitting
+    window.connect_close_request(|w| {
+        w.set_visible(false);
+        glib::Propagation::Stop
+    });
+
+    // Keep app alive when all windows are hidden
+    let _hold_guard = app.hold();
+
+    // Store window reference for re-activation
+    *window_cell.borrow_mut() = Some(window.clone());
+
+    // --- System tray ---
+    let tray = tray::AppTray::new();
+
+    glib::timeout_add_local(std::time::Duration::from_millis(100), {
+        let window = window.clone();
+        let app = app.clone();
+        move || {
+            let _keep_alive = &tray;
+            for action in tray.poll_actions() {
+                match action {
+                    tray::TrayAction::ShowWindow => {
+                        window.set_visible(true);
+                        window.present();
+                    }
+                    tray::TrayAction::Quit => {
+                        app.quit();
+                    }
+                }
+            }
+            glib::ControlFlow::Continue
+        }
+    });
+
+    // --- Scheduler timer ---
+    glib::timeout_add_seconds_local(30, {
+        let manager = manager.clone();
+        move || {
+            if let Some(name) = manager.borrow_mut().check_and_apply_schedule() {
+                println!("Scheduler applied profile: {}", name);
+            }
+            glib::ControlFlow::Continue
+        }
+    });
+
     window.present();
 }
 
@@ -634,140 +681,24 @@ fn update_wallpaper_images_for_profile(profile_name: &str,
     }
 }
 
-// Example usage and CLI interface
 fn main() {
     let app = Application::builder()
-        .application_id("org.example.HelloWorld")
+        .application_id("com.wallpaperhelper.app")
         .build();
 
-    app.connect_activate(build_ui);
+    let window_cell: Rc<RefCell<Option<ApplicationWindow>>> = Rc::new(RefCell::new(None));
 
-    app.run(); //blocks
-
-    /*let mut manager : WallpaperManager = WallpaperManager::new();
-    manager.load_config("config.json");
-
-    println!("Rust Wallpaper Manager");
-    println!("======================");
-
-    loop {
-        println!("\nCommands:");
-        println!("1. monitors     - List available monitors");
-        println!("2. create       - Create new profile");
-        println!("3. set          - Set wallpaper for monitor in profile");
-        println!("4. apply        - Apply profile");
-        println!("5. profiles     - List profiles");
-        println!("6. schedule     - Add schedule");
-        println!("7. schedules    - List schedules");
-        println!("8. start_sched  - Start scheduler");
-        println!("9. stop_sched   - Stop scheduler");
-        println!("10. save        - Save configuration");
-        println!("11. load        - Load configuration");
-        println!("12. quit        - Exit program");
-
-        print!("\nEnter command: ");
-        std::io::stdout().flush().unwrap();
-
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).unwrap();
-        let command = input.trim();
-
-        match command {
-            "1" | "monitors" => {
-                manager.print_monitors();
+    app.connect_activate({
+        let window_cell = window_cell.clone();
+        move |app| {
+            if let Some(ref window) = *window_cell.borrow() {
+                window.set_visible(true);
+                window.present();
+                return;
             }
-            "2" | "create" => {
-                print!("Enter profile name: ");
-                std::io::stdout().flush().unwrap();
-                let mut profile_name = String::new();
-                std::io::stdin().read_line(&mut profile_name).unwrap();
-                manager.create_profile(profile_name.trim());
-            }
-            "3" | "set" => {
-                print!("Enter profile name: ");
-                std::io::stdout().flush().unwrap();
-                let mut profile_name = String::new();
-                std::io::stdin().read_line(&mut profile_name).unwrap();
-
-                print!("Enter device name: ");
-                std::io::stdout().flush().unwrap();
-                let mut device_name = String::new();
-                std::io::stdin().read_line(&mut device_name).unwrap();
-
-                print!("Enter wallpaper path: ");
-                std::io::stdout().flush().unwrap();
-                let mut wallpaper_path = String::new();
-                std::io::stdin().read_line(&mut wallpaper_path).unwrap();
-
-                manager.set_wallpaper_in_profile(
-                    profile_name.trim(),
-                    device_name.trim(),
-                    wallpaper_path.trim()
-                );
-            }
-            "4" | "apply" => {
-                print!("Enter profile name to apply: ");
-                std::io::stdout().flush().unwrap();
-                let mut profile_name = String::new();
-                std::io::stdin().read_line(&mut profile_name).unwrap();
-                manager.apply_profile(profile_name.trim());
-            }
-            "5" | "profiles" => {
-                manager.list_profiles();
-            }
-            "6" | "schedule" => {
-                print!("Enter profile name: ");
-                std::io::stdout().flush().unwrap();
-                let mut profile_name = String::new();
-                std::io::stdin().read_line(&mut profile_name).unwrap();
-
-                print!("Enter hour (0-23): ");
-                std::io::stdout().flush().unwrap();
-                let mut hour_str = String::new();
-                std::io::stdin().read_line(&mut hour_str).unwrap();
-
-                print!("Enter minute (0-59): ");
-                std::io::stdout().flush().unwrap();
-                let mut minute_str = String::new();
-                std::io::stdin().read_line(&mut minute_str).unwrap();
-
-                if let (Ok(hour), Ok(minute)) = (hour_str.trim().parse(), minute_str.trim().parse()) {
-                    manager.add_schedule(profile_name.trim(), hour, minute);
-                } else {
-                    println!("Invalid time format!");
-                }
-            }
-            "7" | "schedules" => {
-                manager.list_schedule();
-            }
-            "8" | "start_sched" => {
-                manager.start_scheduler();
-            }
-            "9" | "stop_sched" => {
-                manager.stop_scheduler();
-            }
-            "10" | "save" => {
-                print!("Enter config filename: ");
-                std::io::stdout().flush().unwrap();
-                let mut filename = String::new();
-                std::io::stdin().read_line(&mut filename).unwrap();
-                manager.save_config(filename.trim());
-            }
-            "11" | "load" => {
-                print!("Enter config filename: ");
-                std::io::stdout().flush().unwrap();
-                let mut filename = String::new();
-                std::io::stdin().read_line(&mut filename).unwrap();
-                manager.load_config(filename.trim());
-            }
-            "12" | "quit" | "exit" => {
-                manager.stop_scheduler();
-                println!("Goodbye!");
-                break;
-            }
-            _ => {
-                println!("Unknown command: {}", command);
-            }
+            build_ui(app, &window_cell);
         }
-    }*/
+    });
+
+    app.run();
 }

@@ -1,10 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 use chrono::{Local, Timelike};
 use serde::{Serialize, Deserialize};
 
@@ -122,7 +118,7 @@ pub struct WallpaperManager {
     pub collections: HashMap<String, ProfileCollection>,
     pub collection_cycle_indices: HashMap<String, usize>,
     pub schedule: Vec<ScheduleEntry>,
-    pub scheduler_running: Arc<AtomicBool>,
+    last_schedule_minute: Option<(u32, u32)>,
     backend: Box<dyn WallpaperBackend>,
 }
 
@@ -152,7 +148,7 @@ impl WallpaperManager {
             collections: HashMap::new(),
             collection_cycle_indices: HashMap::new(),
             schedule: Vec::new(),
-            scheduler_running: Arc::new(AtomicBool::new(false)),
+            last_schedule_minute: None,
             backend,
         }
     }
@@ -433,44 +429,32 @@ impl WallpaperManager {
         }
     }
 
-    pub fn start_scheduler(&mut self) {
-        if self.scheduler_running.load(Ordering::Relaxed) {
-            println!("Scheduler is already running.");
-            return;
+    pub fn check_and_apply_schedule(&mut self) -> Option<String> {
+        let now = Local::now();
+        let current_hour = now.hour();
+        let current_minute = now.minute();
+        let current = (current_hour, current_minute);
+
+        // Clear guard when minute changes
+        if self.last_schedule_minute.is_some() && self.last_schedule_minute != Some(current) {
+            self.last_schedule_minute = None;
         }
 
-        self.scheduler_running.store(true, Ordering::Relaxed);
-        let scheduler_running = self.scheduler_running.clone();
-        let schedule = self.schedule.clone();
-        let _profiles = self.profiles.clone();
+        // Don't re-trigger in the same minute
+        if self.last_schedule_minute.is_some() {
+            return None;
+        }
 
-        thread::spawn(move || {
-            while scheduler_running.load(Ordering::Relaxed) {
-                let now = Local::now();
-                let current_hour = now.hour();
-                let current_minute = now.minute();
-
-                for entry in &schedule {
-                    if entry.enabled && entry.hour == current_hour && entry.minute == current_minute {
-                        println!("Time to apply profile: {}", entry.profile_name);
-                        thread::sleep(Duration::from_secs(60));
-                    }
-                }
-
-                thread::sleep(Duration::from_secs(30));
+        for entry in &self.schedule {
+            if entry.enabled && entry.hour == current_hour && entry.minute == current_minute {
+                let name = entry.profile_name.clone();
+                self.last_schedule_minute = Some(current);
+                self.apply_profile(&name);
+                return Some(name);
             }
-        });
-
-        println!("Scheduler started.");
-    }
-
-    pub fn stop_scheduler(&mut self) {
-        if !self.scheduler_running.load(Ordering::Relaxed) {
-            return;
         }
 
-        self.scheduler_running.store(false, Ordering::Relaxed);
-        println!("Scheduler stopped.");
+        None
     }
 
     pub fn add_tag(&mut self, tag_name: &str, profile_name: &str) {

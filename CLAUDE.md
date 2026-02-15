@@ -34,14 +34,19 @@ Platform-specific code lives behind a `WallpaperBackend` trait in `src/backend/`
 
 ### Core modules
 
-- **`src/main.rs`** — GTK4 application entry point and UI. Contains `WallpaperData` (per-monitor `Picture` widget with file-picker click handler) and `build_ui` which constructs the window with a profile selector dropdown, monitor image grid, apply button, and new-profile dialog. Iterates aliases (not raw device names) from `get_alias_monitor_info()` to build the monitor grid.
+- **`src/main.rs`** — GTK4 application entry point and UI. Contains `WallpaperData` (per-monitor `Picture` widget with file-picker click handler) and `build_ui` which constructs the window with a profile selector dropdown, monitor image grid, apply button, and new-profile dialog. Iterates aliases (not raw device names) from `get_alias_monitor_info()` to build the monitor grid. Handles close-to-hide (window hides to system tray on close), single-instance re-activation via GTK `Application` ID, tray event polling, and a scheduler timer.
+
+- **`src/tray.rs`** — System tray integration with a common `TrayAction` enum (`ShowWindow`, `Quit`) and platform-specific `AppTray` implementations behind `#[cfg]` gates:
+  - **Windows**: Uses `tray-icon` crate. Creates a native Win32 tray icon with a context menu ("Show Window", "Quit") and double-click-to-show support. Icon is a programmatically generated 16x16 teal RGBA square.
+  - **Linux**: Uses `ksni` crate (StatusNotifierItem via D-Bus, blocking mode — no tokio). Menu items send `TrayAction`s through an `mpsc` channel. Uses the `preferences-desktop-wallpaper` freedesktop icon.
+  - Both expose `AppTray::new()` and `AppTray::poll_actions() -> Vec<TrayAction>`, polled every 100ms from the GTK main loop.
 
 - **`src/wallpaper_manager.rs`** — Platform-agnostic core logic. `WallpaperManager` holds:
   - `monitors: Vec<MonitorInfo>` — detected displays (delegated to backend)
   - `aliases: Vec<String>` — user-defined monitor names (e.g., "main", "left", "right"), derived from the current platform's `monitor_map` keys
   - `platform_configs: PlatformConfigs` — per-platform settings (base paths, monitor mappings)
   - `profiles: HashMap<String, WallpaperProfile>` — named profiles mapping aliases to relative wallpaper paths
-  - `schedule: Vec<ScheduleEntry>` — time-based profile switching (scheduler runs in a background thread)
+  - `schedule: Vec<ScheduleEntry>` — time-based profile switching (checked every 30s via `glib::timeout` on the main thread)
   - `backend: Box<dyn WallpaperBackend>` — platform-specific implementation
   - Config persistence via JSON (`config.json`) using `serde`/`serde_json`, with legacy format fallback
 
@@ -55,6 +60,7 @@ Platform-specific code lives behind a `WallpaperBackend` trait in `src/backend/`
   - `resolve_wallpaper_path()` / `make_relative_path()` — converts between relative (stored in profiles) and absolute paths using `wallpaper_base_path`
   - `get_alias_monitor_info()` — returns `(alias, Option<MonitorInfo>)` pairs, overriding resolution from `MonitorMapping::Detailed` when present
   - `apply_profile()` — resolves aliases to device names and relative to absolute paths, then delegates to backend
+  - `check_and_apply_schedule()` — compares current time against enabled schedule entries; applies the matching profile and returns its name, with a minute-level guard to prevent re-triggering
 
 - **`src/wallpaper_source.rs`** — WIP/incomplete trait-based abstraction for wallpaper sources. Currently commented out.
 
@@ -64,6 +70,8 @@ Platform-specific code lives behind a `WallpaperBackend` trait in `src/backend/`
 - The GUI uses `gtk::Picture` (not `Image`) for wallpaper thumbnails so they scale to fit. Uses `Rc<RefCell<>>` for shared mutable state between GTK4 signal handlers.
 - `WallpaperManager` is not `Clone` — it is always behind `Rc<RefCell<>>`.
 - Config loading tries the new `platform_config` format first, then falls back to a legacy format (profiles with raw device names, no platform_config section).
+- **System tray daemon**: Closing the window hides it to the system tray instead of quitting. The GTK main loop stays alive via `app.hold()`, so slideshows and the scheduler continue running in the background. The tray menu provides "Show Window" and "Quit". Re-launching the binary re-activates the existing instance (GTK `Application` with a fixed ID).
+- **Scheduler**: Runs on the main thread via `glib::timeout_add_seconds_local(30, ...)`, calling `check_and_apply_schedule()`. This replaced a broken `std::thread` scheduler that couldn't call the backend.
 
 ### Config file format (`config.json`)
 
