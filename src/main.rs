@@ -134,10 +134,10 @@ impl DropdownEntry {
 
 }
 
-fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationWindow>>>) {
+fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationWindow>>>, config_path: &str) {
     let manager = Rc::new(RefCell::new(WallpaperManager::new()));
     let wallpapers: Rc<RefCell<Vec<WallpaperData>>> = Rc::new(RefCell::new(Vec::new()));
-    manager.borrow_mut().load_config("config.json");
+    manager.borrow_mut().load_config(config_path);
 
     let window = ApplicationWindow::builder()
         .application(app)
@@ -375,11 +375,13 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
 
     // --- New profile button ---
     let new_button = Button::with_label("New profile");
+    let config_path: Rc<str> = Rc::from(config_path);
     new_button.connect_clicked({
         let window = window.clone();
         let manager = manager.clone();
         let wallpapers = wallpapers.clone();
         let rebuild_dropdown = rebuild_dropdown.clone();
+        let config_path = config_path.clone();
         move |_| {
             let dialog = gtk::Dialog::builder()
                 .transient_for(&window)
@@ -400,6 +402,7 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
             let manager = manager.clone();
             let wallpapers = wallpapers.clone();
             let rebuild_dropdown = rebuild_dropdown.clone();
+            let config_path = config_path.clone();
             dialog.connect_response(move |d, resp| {
                 if resp == gtk::ResponseType::Ok {
                     let name = entry.text().to_string();
@@ -413,7 +416,7 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
                                 wallpaper.filename.as_str(),
                             );
                         }
-                        manager.borrow_mut().save_config("config.json");
+                        manager.borrow_mut().save_config(&config_path);
                         rebuild_dropdown(Some(DropdownEntry::Profile(name)));
                     }
                 }
@@ -682,6 +685,8 @@ fn update_wallpaper_images_for_profile(profile_name: &str,
 }
 
 fn main() {
+    let config_path = std::env::args().nth(1).unwrap_or_else(|| "config.json".to_string());
+
     let app = Application::builder()
         .application_id("com.wallpaperhelper.app")
         .build();
@@ -696,7 +701,7 @@ fn main() {
                 window.present();
                 return;
             }
-            build_ui(app, &window_cell);
+            build_ui(app, &window_cell, &config_path);
         }
     });
 
