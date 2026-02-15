@@ -9,9 +9,9 @@ pub fn open_collections_window(
     app: &Application,
     parent: &ApplicationWindow,
     manager: Rc<RefCell<WallpaperManager>>,
-    on_profile_applied: impl Fn(&str) + 'static,
+    on_collections_changed: impl Fn() + 'static,
 ) {
-    let on_profile_applied = Rc::new(on_profile_applied);
+    let on_collections_changed = Rc::new(on_collections_changed);
 
     let window = ApplicationWindow::builder()
         .application(app)
@@ -78,23 +78,6 @@ pub fn open_collections_window(
     right_scroll.set_child(Some(&profile_listbox));
     right_panel.append(&right_scroll);
 
-    // Action bar: Random / Prev / Next
-    let action_bar = Box::new(gtk::Orientation::Horizontal, 6);
-    let random_btn = Button::with_label("Random");
-    let prev_btn = Button::with_label("Prev");
-    let next_btn = Button::with_label("Next");
-    random_btn.set_sensitive(false);
-    prev_btn.set_sensitive(false);
-    next_btn.set_sensitive(false);
-    action_bar.append(&random_btn);
-    action_bar.append(&prev_btn);
-    action_bar.append(&next_btn);
-    right_panel.append(&action_bar);
-
-    let status_label = Label::new(None);
-    status_label.set_xalign(0.0);
-    right_panel.append(&status_label);
-
     content.append(&left_panel);
     content.append(&right_panel);
     root_box.append(&content);
@@ -109,7 +92,6 @@ pub fn open_collections_window(
         let collection_listbox = collection_listbox.clone();
         let manager = manager.clone();
         Rc::new(move || {
-            // Remove all existing rows
             while let Some(child) = collection_listbox.first_child() {
                 collection_listbox.remove(&child);
             }
@@ -138,9 +120,6 @@ pub fn open_collections_window(
         let selected_collection = selected_collection.clone();
         let add_profile_btn = add_profile_btn.clone();
         let remove_profile_btn = remove_profile_btn.clone();
-        let random_btn = random_btn.clone();
-        let prev_btn = prev_btn.clone();
-        let next_btn = next_btn.clone();
         Rc::new(move || {
             while let Some(child) = profile_listbox.first_child() {
                 profile_listbox.remove(&child);
@@ -152,13 +131,6 @@ pub fn open_collections_window(
                 remove_profile_btn.set_sensitive(true);
 
                 let mgr = manager.borrow();
-                let valid = mgr.get_valid_collection_profiles(col_name);
-                let has_profiles = !valid.is_empty();
-                random_btn.set_sensitive(has_profiles);
-                prev_btn.set_sensitive(has_profiles);
-                next_btn.set_sensitive(has_profiles);
-
-                // Show all profiles in the collection (including invalid ones, marked)
                 if let Some(col) = mgr.collections.get(col_name) {
                     for profile_name in &col.profiles {
                         let row = ListBoxRow::new();
@@ -181,9 +153,6 @@ pub fn open_collections_window(
                 collection_name_label.set_text("(select a collection)");
                 add_profile_btn.set_sensitive(false);
                 remove_profile_btn.set_sensitive(false);
-                random_btn.set_sensitive(false);
-                prev_btn.set_sensitive(false);
-                next_btn.set_sensitive(false);
             }
         })
     };
@@ -195,7 +164,6 @@ pub fn open_collections_window(
     collection_listbox.connect_row_selected({
         let selected_collection = selected_collection.clone();
         let populate_profiles = populate_profiles.clone();
-        let status_label = status_label.clone();
         move |_, row| {
             if let Some(row) = row {
                 if let Some(label) = row.child().and_then(|c| c.downcast::<Label>().ok()) {
@@ -204,7 +172,6 @@ pub fn open_collections_window(
             } else {
                 *selected_collection.borrow_mut() = None;
             }
-            status_label.set_text("");
             populate_profiles();
         }
     });
@@ -214,6 +181,7 @@ pub fn open_collections_window(
         let window = window.clone();
         let manager = manager.clone();
         let populate_collections = populate_collections.clone();
+        let on_collections_changed = on_collections_changed.clone();
         move |_| {
             let dialog = gtk::Dialog::builder()
                 .transient_for(&window)
@@ -232,6 +200,7 @@ pub fn open_collections_window(
 
             let manager = manager.clone();
             let populate_collections = populate_collections.clone();
+            let on_collections_changed = on_collections_changed.clone();
             dialog.connect_response(move |d, resp| {
                 if resp == gtk::ResponseType::Ok {
                     let name = entry.text().to_string();
@@ -241,6 +210,7 @@ pub fn open_collections_window(
                         mgr.save_config("config.json");
                         drop(mgr);
                         populate_collections();
+                        on_collections_changed();
                     }
                 }
                 d.close();
@@ -255,6 +225,7 @@ pub fn open_collections_window(
         let populate_collections = populate_collections.clone();
         let populate_profiles = populate_profiles.clone();
         let collection_listbox = collection_listbox.clone();
+        let on_collections_changed = on_collections_changed.clone();
         move |_| {
             let sel = selected_collection.borrow().clone();
             if let Some(col_name) = sel {
@@ -266,6 +237,7 @@ pub fn open_collections_window(
                 collection_listbox.unselect_all();
                 populate_collections();
                 populate_profiles();
+                on_collections_changed();
             }
         }
     });
@@ -276,6 +248,7 @@ pub fn open_collections_window(
         let manager = manager.clone();
         let selected_collection = selected_collection.clone();
         let populate_profiles = populate_profiles.clone();
+        let on_collections_changed = on_collections_changed.clone();
         move |_| {
             let sel = selected_collection.borrow().clone();
             let col_name = match sel {
@@ -283,7 +256,6 @@ pub fn open_collections_window(
                 None => return,
             };
 
-            // Get profiles not already in this collection
             let mgr = manager.borrow();
             let existing: Vec<String> = mgr.collections.get(&col_name)
                 .map(|c| c.profiles.clone())
@@ -316,6 +288,7 @@ pub fn open_collections_window(
 
             let manager = manager.clone();
             let populate_profiles = populate_profiles.clone();
+            let on_collections_changed = on_collections_changed.clone();
             dialog.connect_response(move |d, resp| {
                 if resp == gtk::ResponseType::Ok {
                     if let Some(item) = dropdown.selected_item() {
@@ -326,6 +299,7 @@ pub fn open_collections_window(
                             mgr.save_config("config.json");
                             drop(mgr);
                             populate_profiles();
+                            on_collections_changed();
                         }
                     }
                 }
@@ -340,6 +314,7 @@ pub fn open_collections_window(
         let selected_collection = selected_collection.clone();
         let profile_listbox = profile_listbox.clone();
         let populate_profiles = populate_profiles.clone();
+        let on_collections_changed = on_collections_changed.clone();
         move |_| {
             let sel = selected_collection.borrow().clone();
             let col_name = match sel {
@@ -347,70 +322,15 @@ pub fn open_collections_window(
                 None => return,
             };
             if let Some(row) = profile_listbox.selected_row() {
-                // Get the profile name from the row's label
                 if let Some(label) = row.child().and_then(|c| c.downcast::<Label>().ok()) {
                     let text = label.text().to_string();
-                    // Strip " (missing)" suffix if present
                     let profile_name = text.trim_end_matches(" (missing)");
                     let mut mgr = manager.borrow_mut();
                     mgr.remove_profile_from_collection(&col_name, profile_name);
                     mgr.save_config("config.json");
                     drop(mgr);
                     populate_profiles();
-                }
-            }
-        }
-    });
-
-    // --- Random button ---
-    random_btn.connect_clicked({
-        let manager = manager.clone();
-        let selected_collection = selected_collection.clone();
-        let status_label = status_label.clone();
-        let on_profile_applied = on_profile_applied.clone();
-        move |_| {
-            let sel = selected_collection.borrow().clone();
-            if let Some(col_name) = sel {
-                let result = manager.borrow_mut().apply_random_from_collection(&col_name);
-                if let Some(name) = result {
-                    status_label.set_text(&format!("Applied: {}", name));
-                    on_profile_applied(&name);
-                }
-            }
-        }
-    });
-
-    // --- Prev button ---
-    prev_btn.connect_clicked({
-        let manager = manager.clone();
-        let selected_collection = selected_collection.clone();
-        let status_label = status_label.clone();
-        let on_profile_applied = on_profile_applied.clone();
-        move |_| {
-            let sel = selected_collection.borrow().clone();
-            if let Some(col_name) = sel {
-                let result = manager.borrow_mut().apply_prev_in_collection(&col_name);
-                if let Some(name) = result {
-                    status_label.set_text(&format!("Applied: {}", name));
-                    on_profile_applied(&name);
-                }
-            }
-        }
-    });
-
-    // --- Next button ---
-    next_btn.connect_clicked({
-        let manager = manager.clone();
-        let selected_collection = selected_collection.clone();
-        let status_label = status_label.clone();
-        let on_profile_applied = on_profile_applied.clone();
-        move |_| {
-            let sel = selected_collection.borrow().clone();
-            if let Some(col_name) = sel {
-                let result = manager.borrow_mut().apply_next_in_collection(&col_name);
-                if let Some(name) = result {
-                    status_label.set_text(&format!("Applied: {}", name));
-                    on_profile_applied(&name);
+                    on_collections_changed();
                 }
             }
         }
