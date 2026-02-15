@@ -212,6 +212,9 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
     let dropdown_entries: Rc<RefCell<Vec<DropdownEntry>>> = Rc::new(RefCell::new(Vec::new()));
     let suppressing_signal: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
     let slideshow_source: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+    let slideshow_collection: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    let slideshow_interval: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
+    let tray = Rc::new(tray::AppTray::new());
 
     // Helper: get currently selected dropdown entry
     let get_selected_entry = {
@@ -229,12 +232,69 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
         let slideshow_source = slideshow_source.clone();
         let slideshow_toggle = slideshow_toggle.clone();
         let slideshow_spin = slideshow_spin.clone();
+        let slideshow_collection = slideshow_collection.clone();
+        let tray = tray.clone();
         Rc::new(move || {
             if let Some(source_id) = slideshow_source.borrow_mut().take() {
                 source_id.remove();
             }
             slideshow_toggle.set_label("Start");
             slideshow_spin.set_sensitive(true);
+            *slideshow_collection.borrow_mut() = None;
+            tray.update_slideshow_state(false, "");
+        })
+    };
+
+    // Helper: start slideshow for a collection with given interval
+    let start_slideshow = {
+        let manager = manager.clone();
+        let wallpapers = wallpapers.clone();
+        let warning_alert = warning_alert.clone();
+        let collection_status = collection_status.clone();
+        let slideshow_source = slideshow_source.clone();
+        let slideshow_toggle = slideshow_toggle.clone();
+        let slideshow_spin = slideshow_spin.clone();
+        let slideshow_collection = slideshow_collection.clone();
+        let slideshow_interval = slideshow_interval.clone();
+        let tray = tray.clone();
+        Rc::new(move |col_name: String, interval_sec: u32| {
+            slideshow_toggle.set_label("Stop");
+            slideshow_spin.set_sensitive(false);
+            *slideshow_collection.borrow_mut() = Some(col_name.clone());
+            *slideshow_interval.borrow_mut() = interval_sec;
+            tray.update_slideshow_state(true, &col_name);
+
+            let source_id = glib::timeout_add_seconds_local(interval_sec, {
+                let manager = manager.clone();
+                let wallpapers = wallpapers.clone();
+                let warning_alert = warning_alert.clone();
+                let collection_status = collection_status.clone();
+                let slideshow_source = slideshow_source.clone();
+                let slideshow_toggle = slideshow_toggle.clone();
+                let slideshow_spin = slideshow_spin.clone();
+                let slideshow_collection = slideshow_collection.clone();
+                let tray = tray.clone();
+                let col_name = col_name.clone();
+                move || {
+                    let result = manager.borrow_mut().apply_next_in_collection(&col_name);
+                    if let Some(name) = result {
+                        update_wallpaper_images_for_profile(&name, &wallpapers.borrow(), &manager);
+                        update_warning_alert_for_profile(&name, &warning_alert, &manager);
+                        collection_status.set_text(&format!("Applied: {}", name));
+                        glib::ControlFlow::Continue
+                    } else {
+                        if let Some(sid) = slideshow_source.borrow_mut().take() {
+                            sid.remove();
+                        }
+                        slideshow_toggle.set_label("Start");
+                        slideshow_spin.set_sensitive(true);
+                        *slideshow_collection.borrow_mut() = None;
+                        tray.update_slideshow_state(false, "");
+                        glib::ControlFlow::Break
+                    }
+                }
+            });
+            *slideshow_source.borrow_mut() = Some(source_id);
         })
     };
 
@@ -509,14 +569,10 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
     // --- Slideshow toggle ---
     slideshow_toggle.connect_clicked({
         let get_selected_entry = get_selected_entry.clone();
-        let manager = manager.clone();
-        let wallpapers = wallpapers.clone();
-        let warning_alert = warning_alert.clone();
-        let collection_status = collection_status.clone();
         let slideshow_source = slideshow_source.clone();
         let slideshow_spin = slideshow_spin.clone();
-        let slideshow_toggle = slideshow_toggle.clone();
         let stop_slideshow = stop_slideshow.clone();
+        let start_slideshow = start_slideshow.clone();
         move |_| {
             if slideshow_source.borrow().is_some() {
                 stop_slideshow();
@@ -530,37 +586,7 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
 
             let interval_min = slideshow_spin.value() as u32;
             let interval_sec = interval_min * 60;
-
-            slideshow_toggle.set_label("Stop");
-            slideshow_spin.set_sensitive(false);
-
-            let source_id = glib::timeout_add_seconds_local(interval_sec, {
-                let manager = manager.clone();
-                let wallpapers = wallpapers.clone();
-                let warning_alert = warning_alert.clone();
-                let collection_status = collection_status.clone();
-                let slideshow_source = slideshow_source.clone();
-                let slideshow_toggle = slideshow_toggle.clone();
-                let slideshow_spin = slideshow_spin.clone();
-                let col_name = col_name.clone();
-                move || {
-                    let result = manager.borrow_mut().apply_next_in_collection(&col_name);
-                    if let Some(name) = result {
-                        update_wallpaper_images_for_profile(&name, &wallpapers.borrow(), &manager);
-                        update_warning_alert_for_profile(&name, &warning_alert, &manager);
-                        collection_status.set_text(&format!("Applied: {}", name));
-                        glib::ControlFlow::Continue
-                    } else {
-                        if let Some(sid) = slideshow_source.borrow_mut().take() {
-                            sid.remove();
-                        }
-                        slideshow_toggle.set_label("Start");
-                        slideshow_spin.set_sensitive(true);
-                        glib::ControlFlow::Break
-                    }
-                }
-            });
-            *slideshow_source.borrow_mut() = Some(source_id);
+            start_slideshow(col_name, interval_sec);
         }
     });
 
@@ -595,14 +621,22 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
     // Store window reference for re-activation
     *window_cell.borrow_mut() = Some(window.clone());
 
-    // --- System tray ---
-    let tray = tray::AppTray::new();
-
+    // --- System tray polling ---
     glib::timeout_add_local(std::time::Duration::from_millis(100), {
         let window = window.clone();
         let app = app.clone();
+        let tray = tray.clone();
+        let manager = manager.clone();
+        let wallpapers = wallpapers.clone();
+        let warning_alert = warning_alert.clone();
+        let collection_status = collection_status.clone();
+        let slideshow_collection = slideshow_collection.clone();
+        let slideshow_source = slideshow_source.clone();
+        let slideshow_interval = slideshow_interval.clone();
+        let slideshow_toggle = slideshow_toggle.clone();
+        let slideshow_spin = slideshow_spin.clone();
+        let start_slideshow = start_slideshow.clone();
         move || {
-            let _keep_alive = &tray;
             for action in tray.poll_actions() {
                 match action {
                     tray::TrayAction::ShowWindow => {
@@ -611,6 +645,46 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
                     }
                     tray::TrayAction::Quit => {
                         app.quit();
+                    }
+                    tray::TrayAction::NextWallpaper => {
+                        if let Some(ref col_name) = *slideshow_collection.borrow() {
+                            let result = manager.borrow_mut().apply_next_in_collection(col_name);
+                            if let Some(name) = result {
+                                update_wallpaper_images_for_profile(&name, &wallpapers.borrow(), &manager);
+                                update_warning_alert_for_profile(&name, &warning_alert, &manager);
+                                collection_status.set_text(&format!("Applied: {}", name));
+                            }
+                        }
+                    }
+                    tray::TrayAction::PrevWallpaper => {
+                        if let Some(ref col_name) = *slideshow_collection.borrow() {
+                            let result = manager.borrow_mut().apply_prev_in_collection(col_name);
+                            if let Some(name) = result {
+                                update_wallpaper_images_for_profile(&name, &wallpapers.borrow(), &manager);
+                                update_warning_alert_for_profile(&name, &warning_alert, &manager);
+                                collection_status.set_text(&format!("Applied: {}", name));
+                            }
+                        }
+                    }
+                    tray::TrayAction::ToggleSlideshow => {
+                        if slideshow_source.borrow().is_some() {
+                            // Pause: stop timer but keep collection/interval for resume
+                            if let Some(source_id) = slideshow_source.borrow_mut().take() {
+                                source_id.remove();
+                            }
+                            slideshow_toggle.set_label("Start");
+                            slideshow_spin.set_sensitive(true);
+                            if let Some(ref col_name) = *slideshow_collection.borrow() {
+                                tray.update_slideshow_state(false, col_name);
+                            }
+                        } else {
+                            // Resume with stored collection and interval
+                            let resume = slideshow_collection.borrow().clone();
+                            if let Some(col_name) = resume {
+                                let interval_sec = *slideshow_interval.borrow();
+                                start_slideshow(col_name, interval_sec);
+                            }
+                        }
                     }
                 }
             }

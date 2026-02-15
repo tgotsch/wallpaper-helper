@@ -1,18 +1,28 @@
 pub enum TrayAction {
     ShowWindow,
     Quit,
+    NextWallpaper,
+    PrevWallpaper,
+    ToggleSlideshow,
 }
 
 #[cfg(windows)]
 mod platform {
     use super::TrayAction;
-    use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+    use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
     use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
     pub struct AppTray {
         _tray: TrayIcon,
         show_id: tray_icon::menu::MenuId,
         quit_id: tray_icon::menu::MenuId,
+        next_id: tray_icon::menu::MenuId,
+        prev_id: tray_icon::menu::MenuId,
+        toggle_id: tray_icon::menu::MenuId,
+        status_item: MenuItem,
+        next_item: MenuItem,
+        prev_item: MenuItem,
+        toggle_item: MenuItem,
     }
 
     impl AppTray {
@@ -24,12 +34,25 @@ mod platform {
             }
             let icon = Icon::from_rgba(rgba, 16, 16).expect("Failed to create tray icon");
 
+            let status_item = MenuItem::new("Slideshow: inactive", false, None);
+            let prev_item = MenuItem::new("Previous Wallpaper", false, None);
+            let next_item = MenuItem::new("Next Wallpaper", false, None);
+            let toggle_item = MenuItem::new("Resume Slideshow", false, None);
             let show_item = MenuItem::new("Show Window", true, None);
             let quit_item = MenuItem::new("Quit", true, None);
+
+            let prev_id = prev_item.id().clone();
+            let next_id = next_item.id().clone();
+            let toggle_id = toggle_item.id().clone();
             let show_id = show_item.id().clone();
             let quit_id = quit_item.id().clone();
 
             let menu = Menu::new();
+            menu.append(&status_item).unwrap();
+            menu.append(&prev_item).unwrap();
+            menu.append(&next_item).unwrap();
+            menu.append(&toggle_item).unwrap();
+            menu.append(&PredefinedMenuItem::separator()).unwrap();
             menu.append(&show_item).unwrap();
             menu.append(&quit_item).unwrap();
 
@@ -44,7 +67,33 @@ mod platform {
                 _tray: tray,
                 show_id,
                 quit_id,
+                next_id,
+                prev_id,
+                toggle_id,
+                status_item,
+                next_item,
+                prev_item,
+                toggle_item,
             }
+        }
+
+        pub fn update_slideshow_state(&self, active: bool, collection_name: &str) {
+            let has_collection = !collection_name.is_empty();
+            if active {
+                self.status_item.set_text(&format!("Slideshow: {} (active)", collection_name));
+                self.toggle_item.set_text("Stop Slideshow");
+                self.toggle_item.set_enabled(true);
+            } else if has_collection {
+                self.status_item.set_text(&format!("Slideshow: {} (paused)", collection_name));
+                self.toggle_item.set_text("Resume Slideshow");
+                self.toggle_item.set_enabled(true);
+            } else {
+                self.status_item.set_text("Slideshow: inactive");
+                self.toggle_item.set_text("Resume Slideshow");
+                self.toggle_item.set_enabled(false);
+            }
+            self.prev_item.set_enabled(has_collection);
+            self.next_item.set_enabled(has_collection);
         }
 
         pub fn poll_actions(&self) -> Vec<TrayAction> {
@@ -55,6 +104,12 @@ mod platform {
                     actions.push(TrayAction::ShowWindow);
                 } else if event.id == self.quit_id {
                     actions.push(TrayAction::Quit);
+                } else if event.id == self.next_id {
+                    actions.push(TrayAction::NextWallpaper);
+                } else if event.id == self.prev_id {
+                    actions.push(TrayAction::PrevWallpaper);
+                } else if event.id == self.toggle_id {
+                    actions.push(TrayAction::ToggleSlideshow);
                 }
             }
 
@@ -73,10 +128,11 @@ mod platform {
 mod platform {
     use super::TrayAction;
     use ksni::blocking::TrayMethods;
-    use std::sync::mpsc;
+    use std::sync::{mpsc, Arc, Mutex};
 
     struct KsniTray {
         sender: mpsc::Sender<TrayAction>,
+        slideshow_state: Arc<Mutex<(bool, String)>>,
     }
 
     impl ksni::Tray for KsniTray {
@@ -93,7 +149,50 @@ mod platform {
         }
 
         fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+            let (active, ref col_name) = *self.slideshow_state.lock().unwrap();
+            let has_collection = !col_name.is_empty();
+
+            let status_label = if active {
+                format!("Slideshow: {} (active)", col_name)
+            } else if has_collection {
+                format!("Slideshow: {} (paused)", col_name)
+            } else {
+                "Slideshow: inactive".into()
+            };
+
+            let toggle_label = if active { "Stop Slideshow" } else { "Resume Slideshow" };
+
             vec![
+                ksni::MenuItem::Standard(ksni::menu::StandardItem {
+                    label: status_label,
+                    enabled: false,
+                    ..Default::default()
+                }),
+                ksni::MenuItem::Standard(ksni::menu::StandardItem {
+                    label: "Previous Wallpaper".into(),
+                    enabled: has_collection,
+                    activate: Box::new(|tray: &mut Self| {
+                        let _ = tray.sender.send(TrayAction::PrevWallpaper);
+                    }),
+                    ..Default::default()
+                }),
+                ksni::MenuItem::Standard(ksni::menu::StandardItem {
+                    label: "Next Wallpaper".into(),
+                    enabled: has_collection,
+                    activate: Box::new(|tray: &mut Self| {
+                        let _ = tray.sender.send(TrayAction::NextWallpaper);
+                    }),
+                    ..Default::default()
+                }),
+                ksni::MenuItem::Standard(ksni::menu::StandardItem {
+                    label: toggle_label.into(),
+                    enabled: active || has_collection,
+                    activate: Box::new(|tray: &mut Self| {
+                        let _ = tray.sender.send(TrayAction::ToggleSlideshow);
+                    }),
+                    ..Default::default()
+                }),
+                ksni::MenuItem::Separator,
                 ksni::MenuItem::Standard(ksni::menu::StandardItem {
                     label: "Show Window".into(),
                     activate: Box::new(|tray: &mut Self| {
@@ -114,15 +213,25 @@ mod platform {
 
     pub struct AppTray {
         receiver: mpsc::Receiver<TrayAction>,
+        slideshow_state: Arc<Mutex<(bool, String)>>,
     }
 
     impl AppTray {
         pub fn new() -> Self {
             let (sender, receiver) = mpsc::channel();
-            let tray = KsniTray { sender };
+            let slideshow_state = Arc::new(Mutex::new((false, String::new())));
+            let tray = KsniTray {
+                sender,
+                slideshow_state: slideshow_state.clone(),
+            };
             tray.spawn().expect("Failed to spawn tray");
 
-            Self { receiver }
+            Self { receiver, slideshow_state }
+        }
+
+        pub fn update_slideshow_state(&self, active: bool, collection_name: &str) {
+            let mut state = self.slideshow_state.lock().unwrap();
+            *state = (active, collection_name.to_string());
         }
 
         pub fn poll_actions(&self) -> Vec<TrayAction> {
