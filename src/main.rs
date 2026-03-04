@@ -214,6 +214,7 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
     let slideshow_source: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
     let slideshow_collection: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     let slideshow_interval: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
+    let window_visible: Rc<RefCell<bool>> = Rc::new(RefCell::new(true));
     let tray = Rc::new(tray::AppTray::new());
 
     // Helper: get currently selected dropdown entry
@@ -257,6 +258,7 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
         let slideshow_collection = slideshow_collection.clone();
         let slideshow_interval = slideshow_interval.clone();
         let tray = tray.clone();
+        let window_visible = window_visible.clone();
         Rc::new(move |col_name: String, interval_sec: u32| {
             slideshow_toggle.set_label("Stop");
             slideshow_spin.set_sensitive(false);
@@ -275,11 +277,14 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
                 let slideshow_collection = slideshow_collection.clone();
                 let tray = tray.clone();
                 let col_name = col_name.clone();
+                let window_visible = window_visible.clone();
                 move || {
                     let result = manager.borrow_mut().apply_next_in_collection(&col_name);
                     if let Some(name) = result {
-                        update_wallpaper_images_for_profile(&name, &wallpapers.borrow(), &manager);
-                        update_warning_alert_for_profile(&name, &warning_alert, &manager);
+                        if *window_visible.borrow() {
+                            update_wallpaper_images_for_profile(&name, &wallpapers.borrow(), &manager);
+                            update_warning_alert_for_profile(&name, &warning_alert, &manager);
+                        }
                         collection_status.set_text(&format!("Applied: {}", name));
                         glib::ControlFlow::Continue
                     } else {
@@ -606,12 +611,29 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
     // Close-to-hide: hide window instead of quitting
     window.connect_close_request({
         let app = app.clone();
+        let wallpapers = wallpapers.clone();
+        let window_visible = window_visible.clone();
         move |w| {
             w.set_visible(false);
+            *window_visible.borrow_mut() = false;
+            clear_wallpaper_images(&wallpapers.borrow());
             let notification = gtk::gio::Notification::new("Wallpaper Helper");
             notification.set_body(Some("Still running in the system tray."));
             app.send_notification(Some("minimized-to-tray"), &notification);
             glib::Propagation::Stop
+        }
+    });
+
+    // Reload images when window becomes visible again
+    window.connect_show({
+        let window_visible = window_visible.clone();
+        let update_ui = update_ui_for_selection.clone();
+        move |_| {
+            let was_hidden = !*window_visible.borrow();
+            *window_visible.borrow_mut() = true;
+            if was_hidden {
+                update_ui();
+            }
         }
     });
 
@@ -636,6 +658,7 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
         let slideshow_toggle = slideshow_toggle.clone();
         let slideshow_spin = slideshow_spin.clone();
         let start_slideshow = start_slideshow.clone();
+        let window_visible = window_visible.clone();
         move || {
             for action in tray.poll_actions() {
                 match action {
@@ -650,8 +673,10 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
                         if let Some(ref col_name) = *slideshow_collection.borrow() {
                             let result = manager.borrow_mut().apply_next_in_collection(col_name);
                             if let Some(name) = result {
-                                update_wallpaper_images_for_profile(&name, &wallpapers.borrow(), &manager);
-                                update_warning_alert_for_profile(&name, &warning_alert, &manager);
+                                if *window_visible.borrow() {
+                                    update_wallpaper_images_for_profile(&name, &wallpapers.borrow(), &manager);
+                                    update_warning_alert_for_profile(&name, &warning_alert, &manager);
+                                }
                                 collection_status.set_text(&format!("Applied: {}", name));
                             }
                         }
@@ -660,8 +685,10 @@ fn build_ui(app: &gtk::Application, window_cell: &Rc<RefCell<Option<ApplicationW
                         if let Some(ref col_name) = *slideshow_collection.borrow() {
                             let result = manager.borrow_mut().apply_prev_in_collection(col_name);
                             if let Some(name) = result {
-                                update_wallpaper_images_for_profile(&name, &wallpapers.borrow(), &manager);
-                                update_warning_alert_for_profile(&name, &warning_alert, &manager);
+                                if *window_visible.borrow() {
+                                    update_wallpaper_images_for_profile(&name, &wallpapers.borrow(), &manager);
+                                    update_warning_alert_for_profile(&name, &warning_alert, &manager);
+                                }
                                 collection_status.set_text(&format!("Applied: {}", name));
                             }
                         }
@@ -762,6 +789,12 @@ fn update_wallpaper_images_for_profile(profile_name: &str,
                 wallpaper.image.set_filename(None::<&str>);
             }
         }
+    }
+}
+
+fn clear_wallpaper_images(wallpapers: &Vec<WallpaperData>) {
+    for wallpaper in wallpapers.iter() {
+        wallpaper.image.set_filename(None::<&str>);
     }
 }
 
