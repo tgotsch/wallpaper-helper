@@ -214,6 +214,7 @@ mod platform {
     pub struct AppTray {
         receiver: mpsc::Receiver<TrayAction>,
         slideshow_state: Arc<Mutex<(bool, String)>>,
+        handle: ksni::blocking::Handle<KsniTray>,
     }
 
     impl AppTray {
@@ -224,14 +225,17 @@ mod platform {
                 sender,
                 slideshow_state: slideshow_state.clone(),
             };
-            tray.spawn().expect("Failed to spawn tray");
+            let handle = tray.spawn().expect("Failed to spawn tray");
 
-            Self { receiver, slideshow_state }
+            Self { receiver, slideshow_state, handle }
         }
 
         pub fn update_slideshow_state(&self, active: bool, collection_name: &str) {
-            let mut state = self.slideshow_state.lock().unwrap();
-            *state = (active, collection_name.to_string());
+            {
+                let mut state = self.slideshow_state.lock().unwrap();
+                *state = (active, collection_name.to_string());
+            }
+            self.handle.update(|_| {});
         }
 
         pub fn poll_actions(&self) -> Vec<TrayAction> {
