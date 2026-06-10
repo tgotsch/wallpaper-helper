@@ -1,3 +1,4 @@
+#[derive(Clone, Debug)]
 pub enum TrayAction {
     ShowWindow,
     Quit,
@@ -6,19 +7,27 @@ pub enum TrayAction {
     ToggleSlideshow,
 }
 
+// NOTE (Windows): dioxus-desktop installs global tray_icon event handlers at
+// startup, so `MenuEvent::receiver()` never sees events. Menu events must be
+// consumed via `dioxus::desktop::use_tray_menu_event_handler` and mapped to
+// actions with `AppTray::map_menu_event`. The `tray_icon` types must come from
+// the `dioxus::desktop::trayicon` re-export — a second crate copy would not be
+// routed by those global handlers.
 #[cfg(windows)]
 mod platform {
     use super::TrayAction;
-    use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-    use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
+    use dioxus::desktop::trayicon::menu::{Menu, MenuId, MenuItem, PredefinedMenuItem};
+    use dioxus::desktop::trayicon::{Icon, TrayIcon, TrayIconBuilder};
+    use tokio::sync::mpsc::UnboundedSender;
 
     pub struct AppTray {
         _tray: TrayIcon,
-        show_id: tray_icon::menu::MenuId,
-        quit_id: tray_icon::menu::MenuId,
-        next_id: tray_icon::menu::MenuId,
-        prev_id: tray_icon::menu::MenuId,
-        toggle_id: tray_icon::menu::MenuId,
+        _sender: UnboundedSender<TrayAction>,
+        show_id: MenuId,
+        quit_id: MenuId,
+        next_id: MenuId,
+        prev_id: MenuId,
+        toggle_id: MenuId,
         status_item: MenuItem,
         next_item: MenuItem,
         prev_item: MenuItem,
@@ -26,7 +35,7 @@ mod platform {
     }
 
     impl AppTray {
-        pub fn new() -> Self {
+        pub fn new(sender: UnboundedSender<TrayAction>) -> Self {
             // Create a 16x16 teal icon (RGBA)
             let mut rgba = Vec::with_capacity(16 * 16 * 4);
             for _ in 0..(16 * 16) {
@@ -65,6 +74,7 @@ mod platform {
 
             Self {
                 _tray: tray,
+                _sender: sender,
                 show_id,
                 quit_id,
                 next_id,
@@ -96,30 +106,20 @@ mod platform {
             self.next_item.set_enabled(has_collection);
         }
 
-        pub fn poll_actions(&self) -> Vec<TrayAction> {
-            let mut actions = Vec::new();
-
-            while let Ok(event) = MenuEvent::receiver().try_recv() {
-                if event.id == self.show_id {
-                    actions.push(TrayAction::ShowWindow);
-                } else if event.id == self.quit_id {
-                    actions.push(TrayAction::Quit);
-                } else if event.id == self.next_id {
-                    actions.push(TrayAction::NextWallpaper);
-                } else if event.id == self.prev_id {
-                    actions.push(TrayAction::PrevWallpaper);
-                } else if event.id == self.toggle_id {
-                    actions.push(TrayAction::ToggleSlideshow);
-                }
+        pub fn map_menu_event(&self, id: &MenuId) -> Option<TrayAction> {
+            if *id == self.show_id {
+                Some(TrayAction::ShowWindow)
+            } else if *id == self.quit_id {
+                Some(TrayAction::Quit)
+            } else if *id == self.next_id {
+                Some(TrayAction::NextWallpaper)
+            } else if *id == self.prev_id {
+                Some(TrayAction::PrevWallpaper)
+            } else if *id == self.toggle_id {
+                Some(TrayAction::ToggleSlideshow)
+            } else {
+                None
             }
-
-            while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-                if matches!(event, TrayIconEvent::DoubleClick { .. }) {
-                    actions.push(TrayAction::ShowWindow);
-                }
-            }
-
-            actions
         }
     }
 }
@@ -128,10 +128,11 @@ mod platform {
 mod platform {
     use super::TrayAction;
     use ksni::blocking::TrayMethods;
-    use std::sync::{mpsc, Arc, Mutex};
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::mpsc::UnboundedSender;
 
     struct KsniTray {
-        sender: mpsc::Sender<TrayAction>,
+        sender: UnboundedSender<TrayAction>,
         slideshow_state: Arc<Mutex<(bool, String)>>,
     }
 
@@ -212,14 +213,12 @@ mod platform {
     }
 
     pub struct AppTray {
-        receiver: mpsc::Receiver<TrayAction>,
         slideshow_state: Arc<Mutex<(bool, String)>>,
         handle: ksni::blocking::Handle<KsniTray>,
     }
 
     impl AppTray {
-        pub fn new() -> Self {
-            let (sender, receiver) = mpsc::channel();
+        pub fn new(sender: UnboundedSender<TrayAction>) -> Self {
             let slideshow_state = Arc::new(Mutex::new((false, String::new())));
             let tray = KsniTray {
                 sender,
@@ -227,7 +226,7 @@ mod platform {
             };
             let handle = tray.spawn().expect("Failed to spawn tray");
 
-            Self { receiver, slideshow_state, handle }
+            Self { slideshow_state, handle }
         }
 
         pub fn update_slideshow_state(&self, active: bool, collection_name: &str) {
@@ -236,14 +235,6 @@ mod platform {
                 *state = (active, collection_name.to_string());
             }
             self.handle.update(|_| {});
-        }
-
-        pub fn poll_actions(&self) -> Vec<TrayAction> {
-            let mut actions = Vec::new();
-            while let Ok(action) = self.receiver.try_recv() {
-                actions.push(action);
-            }
-            actions
         }
     }
 }

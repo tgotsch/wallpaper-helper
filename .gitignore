@@ -101,3 +101,10 @@ http-client.private.env.json
 # Apifox Helper cache
 .idea/.cache/.Apifox_Helper
 .idea/ApifoxUploaderProjectSetting.xml
+# Machine-local cargo config (libxdo workaround)
+.cargo/config.toml
+
+# Local node toolchain artifacts
+web/node_modules
+web/dist
+wallpaper_helper.log

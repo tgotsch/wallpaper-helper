@@ -1,0 +1,252 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  background: #fafafa;
+  color: #1a1a1a;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  height: 100vh;
+}
+
+button {
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+/* Selector row */
+.selector-row {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.profile-selector {
+  min-width: 220px;
+  padding: 4px;
+}
+
+/* Alert banner (ports the GTK AlertBox styling) */
+.alert-box {
+  border-left: 4px solid;
+  border-radius: 4px;
+  padding: 8px 12px;
+}
+
+.alert-warning {
+  border-color: #9a6700;
+  background: rgba(154, 103, 0, 0.08);
+  color: #9a6700;
+}
+
+.alert-error {
+  border-color: #d1242f;
+  background: rgba(209, 36, 47, 0.08);
+  color: #d1242f;
+}
+
+.alert-header {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.alert-body {
+  white-space: pre-wrap;
+}
+
+/* Monitor grid */
+.monitor-grid {
+  display: flex;
+  gap: 5px;
+  flex: 1;
+  min-height: 0;
+}
+
+.monitor-tile {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+}
+
+.monitor-label {
+  text-align: center;
+}
+
+.monitor-image-button {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: #f0f0f0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.monitor-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.monitor-image-placeholder {
+  color: #888;
+}
+
+.apply-button {
+  padding: 8px;
+}
+
+/* Collection controls */
+.collection-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.collection-action-bar,
+.slideshow-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.slideshow-bar input[type="number"] {
+  width: 64px;
+  padding: 4px;
+}
+
+.collection-status {
+  text-align: left;
+}
+
+/* Modals */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.modal-panel {
+  background: #fff;
+  border-radius: 8px;
+  padding: 16px;
+  min-width: 320px;
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+}
+
+.modal-panel h3 {
+  margin: 0;
+}
+
+.modal-panel input[type="text"] {
+  padding: 5px;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* Collections modal */
+.collections-panel {
+  width: 700px;
+  height: 500px;
+}
+
+.collections-header {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.collections-header .spacer {
+  flex: 1;
+}
+
+.collections-content {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+}
+
+.collection-list,
+.profile-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.collection-list {
+  width: 200px;
+}
+
+.collection-list li,
+.profile-list li {
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.collection-list li:hover,
+.profile-list li:hover {
+  background: #f0f0f0;
+}
+
+.collection-list li.selected,
+.profile-list li.selected {
+  background: #d0e2ff;
+}
+
+.collection-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.collection-detail-header {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.collection-detail-header .collection-name {
+  flex: 1;
+  font-weight: 600;
+}
+
+.profile-list {
+  flex: 1;
+}

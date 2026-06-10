@@ -7,22 +7,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build          # Debug build
 cargo build --release # Release build
-cargo run            # Run the app (launches GTK4 GUI)
+cargo run            # Run the app (launches Dioxus desktop GUI in a webview)
 cargo test --verbose # Run tests (no tests exist yet)
 ```
 
-CI runs `cargo build --verbose && cargo test --verbose` on both Ubuntu and Windows (see `.github/workflows/rust.yml`).
+CI runs `cargo build --verbose && cargo test --verbose` on both Ubuntu and Windows, plus an `npm ci && npm run build` job for `web/` (see `.github/workflows/rust.yml`). Plain `cargo` is sufficient — the `dx` CLI is not used (no `asset!()` macros; CSS is embedded via `include_str!`).
 
 ### Linux requirements
 
 On Linux (KDE Plasma 6), ensure these are available:
+- Build/link deps: `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev` (Debian/Ubuntu names; on Arch, `webkit2gtk-4.1` and `xdotool` for libxdo)
 - `kscreen-doctor` — for monitor detection (part of `kscreen` / `libkscreen`); optional, sysfs fallback exists
 - `qdbus` or `qdbus6` — for reading/setting wallpapers via Plasma's scripting interface
-- GTK4 dev libraries (`libgtk-4-dev` on Debian/Ubuntu)
+
+### Landing page (`web/`)
+
+Static project page built with Vite + React + the `performative-ui` component library. `cd web && npm install && npm run build` (or `npm run dev`). Not wired to the app; purely a website.
 
 ## Architecture
 
-This is a **cross-platform desktop wallpaper manager** with a GTK4 GUI. It lets users create named wallpaper profiles that map per-monitor wallpaper images, then apply them. A single `config.json` can be shared across platforms (e.g., on a network drive) using user-defined monitor aliases and per-platform settings.
+This is a **cross-platform desktop wallpaper manager** with a **Dioxus 0.7 desktop GUI** (webview renderer — wry/tao). It lets users create named wallpaper profiles that map per-monitor wallpaper images, then apply them. A single `config.json` can be shared across platforms (e.g., on a network drive) using user-defined monitor aliases and per-platform settings.
 
 ### Platform backends
 
@@ -34,19 +38,32 @@ Platform-specific code lives behind a `WallpaperBackend` trait in `src/backend/`
 
 ### Core modules
 
-- **`src/main.rs`** — GTK4 application entry point and UI. Contains `WallpaperData` (per-monitor `Picture` widget with file-picker click handler) and `build_ui` which constructs the window with a profile selector dropdown, monitor image grid, apply button, and new-profile dialog. Iterates aliases (not raw device names) from `get_alias_monitor_info()` to build the monitor grid. Handles close-to-hide (window hides to system tray on close), single-instance re-activation via GTK `Application` ID, tray event polling, and a scheduler timer.
+- **`src/main.rs`** — Entry point. Initializes logging, enforces **single instance** via an `interprocess` local socket (`com.wallpaperhelper.app.sock`, abstract namespace on Linux / named pipe on Windows): a second launch writes "SHOW" to the socket and exits, and the primary's listener thread forwards `TrayAction::ShowWindow` into the app's action channel. Configures and launches the Dioxus desktop app: 1000x1000 window, no menubar, `WindowCloseBehaviour::WindowHides` (close-to-tray). Config path comes from argv[1] (default `config.json`), passed to the root component through `LaunchBuilder::with_context` as `ui::AppInit` (also carries the tray action channel).
 
-- **`src/tray.rs`** — System tray integration with a common `TrayAction` enum (`ShowWindow`, `Quit`) and platform-specific `AppTray` implementations behind `#[cfg]` gates:
-  - **Windows**: Uses `tray-icon` crate. Creates a native Win32 tray icon with a context menu ("Show Window", "Quit") and double-click-to-show support. Icon is a programmatically generated 16x16 teal RGBA square.
-  - **Linux**: Uses `ksni` crate (StatusNotifierItem via D-Bus, blocking mode — no tokio). Menu items send `TrayAction`s through an `mpsc` channel. Uses the `preferences-desktop-wallpaper` freedesktop icon.
-  - Both expose `AppTray::new()` and `AppTray::poll_actions() -> Vec<TrayAction>`, polled every 100ms from the GTK main loop.
+- **`src/ui/`** — Dioxus components:
+  - **`app.rs`** — Root `App` component. Owns all state as signals: `Signal<WallpaperManager>` (works despite `!Clone`/`!Send` because Dioxus desktop is single-threaded with `UnsyncStorage`), selection, picker state, slideshow, window visibility. Provides `AppCtx` (state + tray handle) and `DerivedState` (memos: dropdown `entries`, `displayed_profile`, `warning`) via context. Registers: a `use_asset_handler("wallpaper", ...)` that serves local image files to the webview (`img src="/wallpaper/<percent-encoded-abs-path>"`); a `use_wry_event_handler` for `CloseRequested` (tracks hidden state + sends "still running" notification via `notify-rust`); the tray/single-instance **action drain** (100ms tick over a tokio unbounded channel → `handle_tray_action`) and the **scheduler** (30s tick calling `check_and_apply_schedule()`), both via `background::spawn_repeating` so they keep running while the window is hidden. On Windows only, wires `use_tray_menu_event_handler`/`use_tray_icon_event_handler` into the action channel.
+  - **`background.rs`** — `spawn_repeating(period, tick)` → `RepeatingHandle`. CRITICAL: background work must NOT run as VirtualDom futures on Linux. While the window is hidden, WebKitGTK suspends the page, pending render edits are never acked, and dioxus's `poll_vdom` returns early — freezing *all* spawned futures until the window is shown again (the pipeline self-heals on show). On Linux ticks run as `glib::timeout_add_local` on tao's gtk main loop (wrapped in `Runtime::in_scope` so signal writes work like event handlers); on Windows they run as VirtualDom tasks (untested caveat: WebView2 hidden-window behavior).
+  - **`mod.rs`** — Shared types (`DropdownEntry`, `AppInit`, `AppCtx`, `SlideshowState`) and logic: `select_entry` (stops slideshow, clears overrides, sets status), `start_slideshow`/`pause_slideshow`/`stop_slideshow` (slideshow is a `dioxus::spawn` task sleeping `interval_min * 60`s between `apply_next_in_collection` calls; pause keeps the collection for tray resume, stop clears it), `apply_in_collection`, `displayed_profile_name`, `warning_for_profile`.
+  - **`monitor_grid.rs`** — Per-alias tiles: label (`"{alias} (WxH)"` or `"(not connected)"`), wallpaper thumbnail (hidden while window is hidden, mirroring the old image-clearing), click opens `rfd::AsyncFileDialog`. Picks go into `pending` (feeds "New profile") and `display_overrides` (shown until selection changes) — same semantics as the GTK version.
+  - **`profile_selector.rs`** — `<select>` of sorted profiles + `"[Collection] "`-prefixed collections, New-profile and Collections... buttons.
+  - **`collection_controls.rs`** — Prev/Random/Next, slideshow interval (1–120 min, default 15, disabled while running), Start/Stop, status line. Visible only when a collection is selected.
+  - **`collections_modal.rs`** — Modal collections manager (create/delete collections, add/remove profiles, "(missing)" markers). Saves config after every mutation using the argv config path.
+  - **`dialogs.rs`** — New-profile modal.
+  - **`alert_banner.rs`** — Warning banner (profile alias mismatches via `check_profile_mismatch()`, missing wallpaper files, empty collections).
+  - Styling: `assets/main.css`, embedded with `include_str!` into a `style` element (no asset pipeline).
+
+- **`src/tray.rs`** — System tray with a common `TrayAction` enum (`ShowWindow`, `Quit`, `NextWallpaper`, `PrevWallpaper`, `ToggleSlideshow`); both platforms push actions into a tokio unbounded channel consumed by the root component:
+  - **Windows**: builds the tray menu with the **`dioxus::desktop::trayicon` re-export** of `tray-icon`. IMPORTANT: dioxus-desktop installs global `tray_icon` event handlers at startup, so `MenuEvent::receiver()` never fires — menu events must be consumed via `dioxus::desktop::use_tray_menu_event_handler` and mapped through `AppTray::map_menu_event`. Never add a direct `tray-icon` dependency (a second crate copy would not be routed).
+  - **Linux**: `ksni` crate (StatusNotifierItem via D-Bus, blocking mode on its own thread — unaffected by dioxus's handlers). Menu rebuilt from shared slideshow state.
+  - Both expose `AppTray::new(sender)` and `update_slideshow_state(active, collection)`.
 
 - **`src/wallpaper_manager.rs`** — Platform-agnostic core logic. `WallpaperManager` holds:
   - `monitors: Vec<MonitorInfo>` — detected displays (delegated to backend)
   - `aliases: Vec<String>` — user-defined monitor names (e.g., "main", "left", "right"), derived from the current platform's `monitor_map` keys
   - `platform_configs: PlatformConfigs` — per-platform settings (base paths, monitor mappings)
   - `profiles: HashMap<String, WallpaperProfile>` — named profiles mapping aliases to relative wallpaper paths
-  - `schedule: Vec<ScheduleEntry>` — time-based profile switching (checked every 30s via `glib::timeout` on the main thread)
+  - `collections: HashMap<String, ProfileCollection>` + `collection_cycle_indices` — profile groups with Prev/Next/Random cycling
+  - `schedule: Vec<ScheduleEntry>` — time-based profile switching
   - `backend: Box<dyn WallpaperBackend>` — platform-specific implementation
   - Config persistence via JSON (`config.json`) using `serde`/`serde_json`, with legacy format fallback
 
@@ -61,21 +78,24 @@ Platform-specific code lives behind a `WallpaperBackend` trait in `src/backend/`
   - `get_alias_monitor_info()` — returns `(alias, Option<MonitorInfo>)` pairs, overriding resolution from `MonitorMapping::Detailed` when present
   - `apply_profile()` — resolves aliases to device names and relative to absolute paths, then delegates to backend
   - `check_and_apply_schedule()` — compares current time against enabled schedule entries; applies the matching profile and returns its name, with a minute-level guard to prevent re-triggering
+  - Collection methods: `create_collection`, `delete_collection`, `add_profile_to_collection`, `remove_profile_from_collection`, `get_valid_collection_profiles`, `apply_next_in_collection`, `apply_prev_in_collection`, `apply_random_from_collection`
+
+- **`src/logging.rs`** — `DualLogger` writing to stdout and `wallpaper_helper.log`.
 
 - **`src/wallpaper_source.rs`** — WIP/incomplete trait-based abstraction for wallpaper sources. Currently commented out.
 
 ### Key patterns
 
 - Profiles use **aliases** (e.g., "main", "left", "right") as monitor keys and **relative paths** for wallpapers. Platform-specific device names and base paths are in `platform_config`.
-- The GUI uses `gtk::Picture` (not `Image`) for wallpaper thumbnails so they scale to fit. Uses `Rc<RefCell<>>` for shared mutable state between GTK4 signal handlers.
-- `WallpaperManager` is not `Clone` — it is always behind `Rc<RefCell<>>`.
-- Config loading tries the new `platform_config` format first, then falls back to a legacy format (profiles with raw device names, no platform_config section).
-- **System tray daemon**: Closing the window hides it to the system tray instead of quitting. The GTK main loop stays alive via `app.hold()`, so slideshows and the scheduler continue running in the background. The tray menu provides "Show Window" and "Quit". Re-launching the binary re-activates the existing instance (GTK `Application` with a fixed ID).
-- **Scheduler**: Runs on the main thread via `glib::timeout_add_seconds_local(30, ...)`, calling `check_and_apply_schedule()`. This replaced a broken `std::thread` scheduler that couldn't call the backend.
+- All mutable state lives in Dioxus `Signal`s created in the root component and shared via `AppCtx` context; derived values are `use_memo`s. `WallpaperManager` lives directly in a `Signal` (single-threaded desktop renderer).
+- **System tray daemon**: Closing the window hides it (`WindowCloseBehaviour::WindowHides`); slideshow/scheduler ticks keep running because they live on the glib main loop (Linux), not the VirtualDom. Tray "Quit" must first `set_close_behavior(WindowCloses)` before `window.close()` — `CloseWindow` events are routed through the close behaviour, so `WindowHides` would otherwise swallow the quit.
+- **Single instance**: `interprocess` local socket; a second launch signals the first to show its window (replaces the old GTK Application ID mechanism).
+- Background work goes through `ui::background::spawn_repeating` (glib timers on Linux, VirtualDom tasks on Windows) — never plain `use_future`/`dioxus::spawn` loops, which freeze while the window is hidden on Linux (see `src/ui/background.rs`).
+- Logging: our `DualLogger` handles `log::` macros (stdout + `wallpaper_helper.log`). Dioxus separately auto-initializes a `tracing` subscriber — DEBUG level in debug builds (chatty zbus/ksni output on stdout), INFO in release; `RUST_LOG` overrides it.
 
 ### Config file format (`config.json`)
 
-JSON file with `platform_config`, `profiles`, and `schedule` top-level keys, serialized via `serde`. Profiles use aliases and relative wallpaper paths. Each platform section maps aliases to platform-specific device names and provides the wallpaper base path.
+JSON file with `platform_config`, `profiles`, `collections`, and `schedule` top-level keys, serialized via `serde`. Profiles use aliases and relative wallpaper paths. Each platform section maps aliases to platform-specific device names and provides the wallpaper base path.
 
 ```json
 {
@@ -104,6 +124,11 @@ JSON file with `platform_config`, `profiles`, and `schedule` top-level keys, ser
         "left": "another_wallpaper.png"
       },
       "tags": ["tag1", "tag2"]
+    }
+  },
+  "collections": {
+    "favorites": {
+      "profiles": ["profile_name"]
     }
   },
   "schedule": [

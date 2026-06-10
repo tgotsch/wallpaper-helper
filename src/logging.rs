@@ -2,7 +2,6 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::Mutex;
 
-use gtk4::glib;
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
 struct DualLogger {
@@ -48,24 +47,4 @@ pub fn init() {
     log::set_boxed_logger(Box::new(logger))
         .expect("Failed to set logger");
     log::set_max_level(LevelFilter::Info);
-
-    glib::log_set_default_handler(|domain, level, message| {
-        let domain_str = domain.map(|d| d.to_string()).unwrap_or_else(|| "unknown".to_string());
-        let msg = format!("[GLib:{}] {}", domain_str, message);
-
-        match level {
-            glib::LogLevel::Error | glib::LogLevel::Critical => {
-                log::error!("{}", msg);
-            }
-            glib::LogLevel::Warning => {
-                log::warn!("{}", msg);
-            }
-            glib::LogLevel::Message | glib::LogLevel::Info => {
-                log::info!("{}", msg);
-            }
-            glib::LogLevel::Debug => {
-                log::debug!("{}", msg);
-            }
-        }
-    });
 }

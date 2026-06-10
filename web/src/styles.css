@@ -1,0 +1,151 @@
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #0b0d12;
+  color: #e6e8ee;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  line-height: 1.6;
+}
+
+main {
+  display: flex;
+  flex-direction: column;
+}
+
+section,
+footer {
+  max-width: 1080px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 48px 24px;
+}
+
+h1 {
+  font-size: clamp(2.2rem, 5vw, 3.6rem);
+  line-height: 1.15;
+  margin: 20px 0 0;
+}
+
+h2 {
+  font-size: 1.8rem;
+  margin: 0 0 24px;
+}
+
+a {
+  color: #8ab4ff;
+}
+
+/* Hero */
+.hero {
+  position: relative;
+  overflow: hidden;
+  padding: 96px 24px 80px;
+  text-align: center;
+}
+
+.hero-content {
+  position: relative;
+  max-width: 820px;
+  margin: 0 auto;
+}
+
+.hero-sub {
+  font-size: 1.15rem;
+  color: #b6bcc9;
+  max-width: 640px;
+  margin: 20px auto 32px;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* Features */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 18px;
+}
+
+.stat-row {
+  display: flex;
+  gap: 48px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: 48px;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.stat-number {
+  font-size: 2.4rem;
+  font-weight: 700;
+}
+
+.stat-label {
+  color: #b6bcc9;
+  font-size: 0.95rem;
+}
+
+/* Install */
+.install-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 18px;
+  margin-top: 12px;
+}
+
+.install-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.install-card h3 {
+  margin-top: 0;
+}
+
+pre {
+  background: #11141b;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 14px;
+  overflow-x: auto;
+  font-size: 0.85rem;
+}
+
+code {
+  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+}
+
+.install-note {
+  color: #b6bcc9;
+  font-size: 0.9rem;
+}
+
+/* Footer */
+.footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: center;
+  color: #b6bcc9;
+}

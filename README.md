@@ -1,6 +1,6 @@
 # Wallpaper Helper
 
-A cross-platform desktop wallpaper manager with a GTK4 GUI. Create named wallpaper profiles that map per-monitor images, then apply them with one click. A single config file can be shared across platforms (e.g., on a network drive) using user-defined monitor aliases and per-platform settings.
+A cross-platform desktop wallpaper manager with a [Dioxus](https://dioxuslabs.com/) (webview) GUI. Create named wallpaper profiles that map per-monitor images, then apply them with one click. A single config file can be shared across platforms (e.g., on a network drive) using user-defined monitor aliases and per-platform settings.
 
 ## Features
 
@@ -24,7 +24,9 @@ A cross-platform desktop wallpaper manager with a GTK4 GUI. Create named wallpap
 
 ### Linux (KDE Plasma 6)
 
-- GTK4 development libraries (`libgtk-4-dev` on Debian/Ubuntu, `gtk4` on Arch)
+- WebKitGTK and tray build dependencies:
+  - Debian/Ubuntu: `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev`
+  - Arch: `webkit2gtk-4.1 xdotool` (xdotool provides `libxdo`)
 - `kscreen-doctor` — for monitor detection (part of `kscreen`/`libkscreen`); optional, a sysfs fallback exists
 - `qdbus` or `qdbus6` — for reading/setting wallpapers via Plasma's scripting interface
 
@@ -46,7 +48,7 @@ cargo run
 cargo run -- /path/to/config.json   # Use a custom config location
 ```
 
-This launches the GTK4 GUI where you can select a profile, view/change wallpapers per monitor, and apply them. An optional command-line argument specifies the config file path (defaults to `config.json` in the working directory).
+This launches the GUI where you can select a profile, view/change wallpapers per monitor, and apply them. An optional command-line argument specifies the config file path (defaults to `config.json` in the working directory).
 
 Closing the window hides the app to the system tray rather than quitting. Use the tray icon menu to restore the window or quit.
 
@@ -104,6 +106,17 @@ Each alias in `monitor_map` maps to either:
 ### Wallpaper paths
 
 Profiles store **relative** wallpaper paths. These are resolved against the current platform's `wallpaper_base_path` at apply time, which is what makes the config portable across machines.
+
+## Landing page
+
+A static project page built with React + [performative-ui](https://github.com/vorpus/performativeUI) lives in `web/`:
+
+```bash
+cd web
+npm install
+npm run dev      # local dev server
+npm run build    # production build in web/dist
+```
 
 ## License
 
