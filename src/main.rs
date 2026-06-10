@@ -70,7 +70,8 @@ fn main() {
                 .with_window(
                     WindowBuilder::new()
                         .with_title("Wallpaper Helper")
-                        .with_inner_size(LogicalSize::new(1000.0, 1000.0)),
+                        .with_inner_size(LogicalSize::new(1100.0, 780.0))
+                        .with_min_inner_size(LogicalSize::new(820.0, 560.0)),
                 )
                 .with_menu(None)
                 .with_close_behaviour(WindowCloseBehaviour::WindowHides)

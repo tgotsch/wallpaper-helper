@@ -3,6 +3,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use dioxus::prelude::*;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::tray::{AppTray, TrayAction};
@@ -12,26 +13,13 @@ use background::RepeatingHandle;
 pub mod app;
 pub mod background;
 mod alert_banner;
-mod collection_controls;
-mod collections_modal;
+mod collections_view;
 mod dialogs;
-mod monitor_grid;
-mod profile_selector;
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum DropdownEntry {
-    Profile(String),
-    Collection(String),
-}
-
-impl DropdownEntry {
-    pub fn display_label(&self) -> String {
-        match self {
-            DropdownEntry::Profile(name) => name.clone(),
-            DropdownEntry::Collection(name) => format!("[Collection] {}", name),
-        }
-    }
-}
+mod monitors_view;
+mod preview;
+mod profiles_view;
+mod sidebar;
+pub mod thumbs;
 
 /// Values handed from main() into the root component via LaunchBuilder::with_context.
 #[derive(Clone)]
@@ -41,12 +29,41 @@ pub struct AppInit {
     pub action_rx: Arc<Mutex<Option<UnboundedReceiver<TrayAction>>>>,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum View {
+    Profiles,
+    Collections,
+    Monitors,
+}
+
+/// Which name-input modal is open, if any.
+#[derive(Clone, PartialEq)]
+pub enum NameModalKind {
+    NewProfile,
+    SaveProfileAs,
+    NewCollection,
+}
+
+/// Which confirmation modal is open, if any.
+#[derive(Clone, PartialEq)]
+pub enum ConfirmKind {
+    DeleteProfile(String),
+    DeleteCollection(String),
+    DeleteAlias(String),
+}
+
 pub struct SlideshowState {
     /// Collection the slideshow runs (or is paused) on. Kept across pause so
     /// the tray can resume; cleared on full stop.
     pub collection: Option<String>,
     pub interval_min: u32,
     pub task: Option<RepeatingHandle>,
+}
+
+impl SlideshowState {
+    pub fn is_running(&self) -> bool {
+        self.task.is_some()
+    }
 }
 
 impl Default for SlideshowState {
@@ -59,27 +76,21 @@ impl Default for SlideshowState {
     }
 }
 
-impl SlideshowState {
-    pub fn is_running(&self) -> bool {
-        self.task.is_some()
-    }
-}
-
 /// Shared app state, provided once as context from the root component.
 #[derive(Clone)]
 pub struct AppCtx {
     pub manager: Signal<WallpaperManager>,
     pub config_path: Rc<str>,
-    pub selected: Signal<Option<DropdownEntry>>,
-    /// Per-alias wallpaper paths used when creating a new profile: seeded from
-    /// the wallpapers active at startup, overwritten by file-picker choices.
-    pub pending: Signal<HashMap<String, String>>,
-    /// Picker choices shown in the grid until the selection changes.
-    pub display_overrides: Signal<HashMap<String, String>>,
+    pub view: Signal<View>,
+    pub selected_profile: Signal<Option<String>>,
+    pub selected_collection: Signal<Option<String>>,
+    /// Per-alias absolute wallpaper paths being edited for the selected
+    /// profile. Seeded from the profile on selection; picker clicks change it.
+    pub draft: Signal<HashMap<String, String>>,
     pub status: Signal<String>,
     pub slideshow: Signal<SlideshowState>,
-    pub show_collections_modal: Signal<bool>,
-    pub show_new_profile_dialog: Signal<bool>,
+    pub name_modal: Signal<Option<NameModalKind>>,
+    pub confirm_modal: Signal<Option<ConfirmKind>>,
     pub window_visible: Signal<bool>,
     pub tray: Rc<AppTray>,
 }
@@ -156,25 +167,46 @@ impl AppCtx {
         }
     }
 
-    /// Switch the dropdown selection: stops any slideshow, drops picker
-    /// overrides, and resets the status line (collections show their current
-    /// cycle entry). Mirrors the GTK selected-notify + update_ui path.
-    pub fn select_entry(&self, entry: Option<DropdownEntry>) {
-        self.stop_slideshow();
-        self.display_overrides.clone().write().clear();
-        let status = match &entry {
-            Some(DropdownEntry::Collection(_)) => {
-                let manager = self.manager;
-                let mgr = manager.read();
-                match displayed_profile_name(&mgr, &entry) {
-                    Some(profile) => format!("Current: {}", profile),
-                    None => String::new(),
+    /// Select a profile in the Profiles view and seed the editor draft from it.
+    pub fn select_profile(&self, name: Option<String>) {
+        let draft = match &name {
+            Some(profile_name) => draft_from_profile(&self.manager.clone().read(), profile_name),
+            None => HashMap::new(),
+        };
+        self.selected_profile.clone().set(name);
+        self.draft.clone().set(draft);
+    }
+
+    /// Whether the draft differs from the selected profile's saved wallpapers.
+    pub fn draft_dirty(&self) -> bool {
+        let selected = self.selected_profile.clone();
+        let selected = selected.read();
+        let Some(profile_name) = selected.as_ref() else {
+            return false;
+        };
+        let manager = self.manager.clone();
+        let saved = draft_from_profile(&manager.read(), profile_name);
+        *self.draft.clone().read() != saved
+    }
+
+    /// Write the draft's wallpapers into `profile_name` (creating it if
+    /// needed) and persist the config.
+    pub fn save_draft_to(&self, profile_name: &str) {
+        let draft = self.draft.clone().read().clone();
+        let mut manager = self.manager;
+        let mut mgr = manager.write();
+        if !mgr.profiles.contains_key(profile_name) {
+            mgr.create_profile(profile_name);
+        }
+        let aliases = mgr.aliases.clone();
+        for alias in &aliases {
+            if let Some(path) = draft.get(alias) {
+                if !path.is_empty() {
+                    mgr.set_wallpaper_in_profile(profile_name, alias, path);
                 }
             }
-            _ => String::new(),
-        };
-        self.selected.clone().set(entry);
-        self.status.clone().set(status);
+        }
+        mgr.save_config(&self.config_path);
     }
 }
 
@@ -185,29 +217,46 @@ pub enum CollectionStep {
     Random,
 }
 
-/// The profile whose wallpapers the grid should display for the current
-/// selection: the profile itself, or the collection's current cycle entry.
-pub fn displayed_profile_name(
-    manager: &WallpaperManager,
-    selected: &Option<DropdownEntry>,
-) -> Option<String> {
-    match selected {
-        Some(DropdownEntry::Profile(name)) => Some(name.clone()),
-        Some(DropdownEntry::Collection(col_name)) => {
-            let valid = manager.get_valid_collection_profiles(col_name);
-            if valid.is_empty() {
-                None
-            } else {
-                let idx = manager
-                    .collection_cycle_indices
-                    .get(col_name)
-                    .copied()
-                    .unwrap_or(0);
-                Some(valid[idx.min(valid.len() - 1)].clone())
-            }
-        }
-        None => None,
+/// The selected profile's wallpapers as absolute paths per alias (empty string
+/// when the profile has no entry for an alias).
+pub fn draft_from_profile(manager: &WallpaperManager, profile_name: &str) -> HashMap<String, String> {
+    let profile = manager.profiles.get(profile_name);
+    manager
+        .aliases
+        .iter()
+        .map(|alias| {
+            let abs = profile
+                .and_then(|p| p.monitor_wallpapers.get(alias))
+                .map(|rel| manager.resolve_wallpaper_path(rel))
+                .unwrap_or_default();
+            (alias.clone(), abs)
+        })
+        .collect()
+}
+
+/// The profile a collection's cycle position currently points at.
+pub fn current_collection_profile(manager: &WallpaperManager, col_name: &str) -> Option<String> {
+    let valid = manager.get_valid_collection_profiles(col_name);
+    if valid.is_empty() {
+        return None;
     }
+    let idx = manager
+        .collection_cycle_indices
+        .get(col_name)
+        .copied()
+        .unwrap_or(0);
+    Some(valid[idx.min(valid.len() - 1)].clone())
+}
+
+/// URL for the wallpaper asset handler: serves a cached JPEG of the local
+/// file downscaled to at most `width` px (see `thumbs`). Omitting `?w=` on a
+/// handler request serves the raw file, but the UI always wants it bounded.
+pub fn wallpaper_thumb_url(abs_path: &str, width: u32) -> String {
+    format!(
+        "/wallpaper/{}?w={}",
+        utf8_percent_encode(abs_path, NON_ALPHANUMERIC),
+        width
+    )
 }
 
 /// Port of the GTK update_warning_alert_for_profile: alias mismatches and
@@ -252,4 +301,18 @@ pub fn warning_for_profile(manager: &WallpaperManager, profile_name: &str) -> Op
     } else {
         Some(parts.join("\n"))
     }
+}
+
+/// Sorted profile names.
+pub fn sorted_profiles(manager: &WallpaperManager) -> Vec<String> {
+    let mut names: Vec<String> = manager.profiles.keys().cloned().collect();
+    names.sort();
+    names
+}
+
+/// Sorted collection names.
+pub fn sorted_collections(manager: &WallpaperManager) -> Vec<String> {
+    let mut names: Vec<String> = manager.collections.keys().cloned().collect();
+    names.sort();
+    names
 }

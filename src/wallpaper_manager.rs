@@ -161,6 +161,24 @@ impl WallpaperManager {
         { &self.platform_configs.linux }
     }
 
+    pub fn current_platform_config_mut(&mut self) -> &mut PlatformConfig {
+        #[cfg(windows)]
+        { &mut self.platform_configs.windows }
+        #[cfg(target_os = "linux")]
+        { &mut self.platform_configs.linux }
+    }
+
+    /// Re-derive the alias list from the current platform's monitor_map. Call
+    /// after mutating the monitor map through `current_platform_config_mut()`.
+    pub fn sync_aliases(&mut self) {
+        self.aliases = self.current_platform_config()
+            .monitor_map
+            .keys()
+            .cloned()
+            .collect();
+        self.aliases.sort();
+    }
+
     fn resolve_alias_to_device(&self, alias: &str) -> Option<&str> {
         self.current_platform_config().monitor_map.get(alias).map(|m| m.device())
     }
@@ -228,7 +246,7 @@ impl WallpaperManager {
         Some(info)
     }
 
-    fn refresh_monitors(&mut self) {
+    pub fn refresh_monitors(&mut self) {
         self.monitors = self.backend.refresh_monitors();
 
         info!("=== Monitor Information ===");
@@ -294,6 +312,15 @@ impl WallpaperManager {
         });
 
         info!("Profile '{}' created.", profile_name);
+        true
+    }
+
+    pub fn delete_profile(&mut self, profile_name: &str) -> bool {
+        if self.profiles.remove(profile_name).is_none() {
+            warn!("Profile '{}' does not exist!", profile_name);
+            return false;
+        }
+        info!("Profile '{}' deleted.", profile_name);
         true
     }
 
@@ -615,12 +642,7 @@ impl WallpaperManager {
             }
 
             // Build alias list from current platform's monitor_map
-            self.aliases = self.current_platform_config()
-                .monitor_map
-                .keys()
-                .cloned()
-                .collect();
-            self.aliases.sort();
+            self.sync_aliases();
 
             for alias in &self.aliases {
                 if let Some(mapping) = self.current_platform_config().monitor_map.get(alias) {

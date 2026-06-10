@@ -7,20 +7,11 @@ use percent_encoding::percent_decode_str;
 
 use crate::tray::{AppTray, TrayAction};
 use crate::ui::{
-    alert_banner::AlertBanner, collection_controls::CollectionControls,
-    collections_modal::CollectionsModal, dialogs::NewProfileDialog, displayed_profile_name,
-    monitor_grid::MonitorGrid, profile_selector::ProfileSelector, warning_for_profile, AppCtx,
-    AppInit, CollectionStep, DropdownEntry, SlideshowState,
+    collections_view::CollectionsView, dialogs::{ConfirmModal, NameModal},
+    monitors_view::MonitorsView, profiles_view::ProfilesView, sidebar::Sidebar, sorted_profiles,
+    AppCtx, AppInit, CollectionStep, SlideshowState, View,
 };
 use crate::wallpaper_manager::WallpaperManager;
-
-/// Extra context the components read alongside AppCtx: derived (memoized) state.
-#[derive(Clone, Copy)]
-pub struct DerivedState {
-    pub entries: Memo<Vec<DropdownEntry>>,
-    pub displayed_profile: Memo<Option<String>>,
-    pub warning: Memo<Option<String>>,
-}
 
 #[component]
 pub fn App() -> Element {
@@ -32,39 +23,34 @@ pub fn App() -> Element {
         m
     });
 
-    // Seed per-alias paths from the wallpapers active at startup (same as the
-    // GTK version: these feed "New profile" until overwritten by the picker).
-    let pending = use_signal(|| {
+    let selected_profile = use_signal(|| {
         let mgr = manager.peek();
-        let mut map = HashMap::new();
-        for (alias, _) in mgr.get_alias_monitor_info() {
-            map.insert(alias.clone(), mgr.get_current_wallpaper_by_alias(&alias));
+        let names = sorted_profiles(&mgr);
+        if names.iter().any(|n| n == "default") {
+            Some("default".to_string())
+        } else {
+            names.first().cloned()
         }
-        map
     });
 
-    let selected = use_signal(|| {
+    let selected_collection = use_signal(|| {
         let mgr = manager.peek();
-        let mut profile_names: Vec<String> = mgr.profiles.keys().cloned().collect();
-        profile_names.sort();
-        if profile_names.iter().any(|n| n == "default") {
-            return Some(DropdownEntry::Profile("default".to_string()));
-        }
-        if let Some(first) = profile_names.first() {
-            return Some(DropdownEntry::Profile(first.clone()));
-        }
-        let mut collection_names: Vec<String> = mgr.collections.keys().cloned().collect();
-        collection_names.sort();
-        collection_names
-            .first()
-            .map(|n| DropdownEntry::Collection(n.clone()))
+        crate::ui::sorted_collections(&mgr).first().cloned()
     });
 
-    let display_overrides = use_signal(HashMap::new);
+    let draft = use_signal(|| {
+        let mgr = manager.peek();
+        match &*selected_profile.peek() {
+            Some(name) => crate::ui::draft_from_profile(&mgr, name),
+            None => HashMap::new(),
+        }
+    });
+
+    let view = use_signal(|| View::Profiles);
     let status = use_signal(String::new);
     let slideshow = use_signal(SlideshowState::default);
-    let show_collections_modal = use_signal(|| false);
-    let show_new_profile_dialog = use_signal(|| false);
+    let name_modal = use_signal(|| None);
+    let confirm_modal = use_signal(|| None);
     let window_visible = use_signal(|| true);
 
     let tray = use_hook(|| Rc::new(AppTray::new(init.action_tx.clone())));
@@ -72,87 +58,80 @@ pub fn App() -> Element {
     let ctx = use_context_provider(|| AppCtx {
         manager,
         config_path: Rc::from(init.config_path.as_str()),
-        selected,
-        pending,
-        display_overrides,
+        view,
+        selected_profile,
+        selected_collection,
+        draft,
         status,
         slideshow,
-        show_collections_modal,
-        show_new_profile_dialog,
+        name_modal,
+        confirm_modal,
         window_visible,
         tray: tray.clone(),
     });
 
-    // --- Derived state ---
-    let entries = use_memo(move || {
-        let mgr = manager.read();
-        let mut profile_names: Vec<String> = mgr.profiles.keys().cloned().collect();
-        profile_names.sort();
-        let mut collection_names: Vec<String> = mgr.collections.keys().cloned().collect();
-        collection_names.sort();
-        let mut entries: Vec<DropdownEntry> = profile_names
-            .into_iter()
-            .map(DropdownEntry::Profile)
-            .collect();
-        entries.extend(collection_names.into_iter().map(DropdownEntry::Collection));
-        entries
-    });
-
-    let displayed_profile =
-        use_memo(move || displayed_profile_name(&manager.read(), &selected.read()));
-
-    let warning = use_memo(move || {
-        let mgr = manager.read();
-        match &*selected.read() {
-            Some(DropdownEntry::Profile(name)) => warning_for_profile(&mgr, name),
-            Some(DropdownEntry::Collection(col_name)) => {
-                if mgr.get_valid_collection_profiles(col_name).is_empty() {
-                    Some("Collection has no valid profiles".to_string())
-                } else {
-                    displayed_profile
-                        .read()
-                        .as_ref()
-                        .and_then(|p| warning_for_profile(&mgr, p))
-                }
-            }
-            None => None,
-        }
-    });
-
-    use_context_provider(|| DerivedState {
-        entries,
-        displayed_profile,
-        warning,
-    });
-
-    // Keep the selection valid when profiles/collections change (e.g. a
-    // collection is deleted while selected).
+    // Keep selections valid as profiles/collections are created and deleted.
     {
         let ctx = ctx.clone();
         use_effect(move || {
-            let entries = entries.read();
-            let still_valid = selected
+            let mgr = manager.read();
+            let profiles = sorted_profiles(&mgr);
+            let collections = crate::ui::sorted_collections(&mgr);
+            drop(mgr);
+
+            let profile_ok = selected_profile
                 .peek()
                 .as_ref()
-                .is_some_and(|sel| entries.contains(sel));
-            if !still_valid {
-                let fallback = entries
-                    .iter()
-                    .find(|e| matches!(e, DropdownEntry::Profile(n) if n == "default"))
-                    .cloned()
-                    .or_else(|| entries.first().cloned());
-                ctx.select_entry(fallback);
+                .is_some_and(|p| profiles.contains(p));
+            if !profile_ok {
+                let fallback = if profiles.iter().any(|n| n == "default") {
+                    Some("default".to_string())
+                } else {
+                    profiles.first().cloned()
+                };
+                ctx.select_profile(fallback);
+            }
+
+            let collection_ok = selected_collection
+                .peek()
+                .as_ref()
+                .is_some_and(|c| collections.contains(c));
+            if !collection_ok {
+                ctx.selected_collection.clone().set(collections.first().cloned());
             }
         });
     }
 
-    // --- Wallpaper thumbnails: serve local files to the webview ---
+    // --- Wallpaper previews: serve local files to the webview. A `?w=` query
+    // returns a cached downscaled JPEG instead of the raw file (decoding
+    // full-resolution wallpapers for small previews made the UI lag). ---
     use_asset_handler("wallpaper", move |request, responder| {
         let decoded = percent_decode_str(request.uri().path().trim_start_matches("/wallpaper/"))
             .decode_utf8_lossy()
             .to_string();
+        let width: Option<u32> = request.uri().query().and_then(|q| {
+            q.split('&')
+                .find_map(|kv| kv.strip_prefix("w="))
+                .and_then(|w| w.parse().ok())
+        });
         std::thread::spawn(move || {
             use dioxus::desktop::wry::http::Response;
+            let not_found =
+                || Response::builder().status(404).body(Vec::new()).unwrap();
+
+            if let Some(width) = width {
+                match crate::ui::thumbs::thumbnail_jpeg(&decoded, width) {
+                    Some(jpeg) => responder.respond(
+                        Response::builder()
+                            .header("Content-Type", "image/jpeg")
+                            .body(jpeg.as_ref().clone())
+                            .unwrap(),
+                    ),
+                    None => responder.respond(not_found()),
+                }
+                return;
+            }
+
             match std::fs::read(&decoded) {
                 Ok(data) => {
                     let mime = match std::path::Path::new(&decoded)
@@ -174,9 +153,7 @@ pub fn App() -> Element {
                             .unwrap(),
                     );
                 }
-                Err(_) => responder.respond(
-                    Response::builder().status(404).body(Vec::new()).unwrap(),
-                ),
+                Err(_) => responder.respond(not_found()),
             }
         });
     });
@@ -262,35 +239,21 @@ pub fn App() -> Element {
         });
     }
 
-    let show_apply = matches!(&*selected.read(), Some(DropdownEntry::Profile(_)));
+    let current_view = *view.read();
 
     rsx! {
         style { {include_str!("../../assets/main.css")} }
         div { class: "app",
-            ProfileSelector {}
-            AlertBanner {}
-            MonitorGrid {}
-            if show_apply {
-                button {
-                    class: "apply-button",
-                    onclick: move |_| {
-                        let name = match &*selected.peek() {
-                            Some(DropdownEntry::Profile(name)) => name.clone(),
-                            _ => return,
-                        };
-                        log::info!("Applying profile: '{}'", name);
-                        manager.clone().write().apply_profile(&name);
-                    },
-                    "Apply Selected profile"
+            Sidebar {}
+            main { class: "content",
+                match current_view {
+                    View::Profiles => rsx! { ProfilesView {} },
+                    View::Collections => rsx! { CollectionsView {} },
+                    View::Monitors => rsx! { MonitorsView {} },
                 }
             }
-            CollectionControls {}
-            if *show_new_profile_dialog.read() {
-                NewProfileDialog {}
-            }
-            if *show_collections_modal.read() {
-                CollectionsModal {}
-            }
+            NameModal {}
+            ConfirmModal {}
         }
     }
 }

@@ -9,6 +9,7 @@ edition = "2021"
 dioxus = { version = "0.7", features = ["desktop"] }
 tokio = { version = "1", features = ["time", "sync", "rt"] }
 rfd = "0.17"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp"] }
 percent-encoding = "2"
 notify-rust = "4"
 interprocess = "2"

@@ -9,6 +9,7 @@ dependencies = [
  "chrono",
  "dioxus",
  "glib",
+ "image",
  "interprocess",
  "ksni",
  "log",
